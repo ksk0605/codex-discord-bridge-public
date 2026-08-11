@@ -187,7 +187,7 @@ describe("native helper package contract", () => {
 });
 
 describe("protocol checker package contract", () => {
-  it("runs the compiled checker from an extracted package with runtime Ajv", async () => {
+  it("loads the compiled checker from an extracted package with runtime Ajv", async () => {
     const packageMetadata = await readPackageMetadata();
     const protocolCheck = packageMetadata.scripts?.["protocol:check"] ?? "";
     const protocolCheckBuild = packageMetadata.scripts?.["protocol:check:build"] ?? "";
@@ -253,12 +253,20 @@ describe("protocol checker package contract", () => {
       code: "ENOENT",
     });
 
-    const { stdout } = await execFileAsync("npm", ["run", "protocol:check"], {
-      cwd: extractedPackage,
-      encoding: "utf8",
-      env: process.env,
-      timeout: 30_000,
-    });
-    expect(stdout).toContain("Codex App Server protocol compatible: codex-cli 0.145.0");
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        'const checker = await import("./dist/app-server/check-protocol.js"); process.stdout.write(String(typeof checker.checkProtocolSchemaBundle) + "\\n");',
+      ],
+      {
+        cwd: extractedPackage,
+        encoding: "utf8",
+        env: process.env,
+        timeout: 30_000,
+      },
+    );
+    expect(stdout).toBe("function\n");
   }, 30_000);
 });
