@@ -6,6 +6,7 @@ import {
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BridgeError } from "../domain/errors.js";
+import type { CredentialStore } from "./credentials.js";
 
 export const DEFAULT_KEYCHAIN_SERVICE = "com.openai.codex-discord-bridge";
 export const KEYCHAIN_NOT_FOUND_EXIT_CODE = 44;
@@ -115,7 +116,7 @@ function decodeUtf8(bytes: Buffer, outputLabel: string): string {
   }
 }
 
-export class KeychainStore {
+export class KeychainStore implements CredentialStore {
   readonly #helperPath: string;
   readonly #service: string;
   readonly #spawn: KeychainSpawn;

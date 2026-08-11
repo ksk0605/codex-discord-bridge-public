@@ -435,6 +435,70 @@ describe("ManagerService", () => {
     expect((await context.registry.read()).bindings[binding.id]?.threadId).toBe(THREAD);
   });
 
+  it("restores only desired running agents and leaves existing tmux sessions alone", async () => {
+    const context = await fixture();
+    await context.service.registerBot({ name: "bot-one", ownerUserId: OWNER, token: "secret" });
+    await context.service.addWorkspace(workspace);
+    const running = await context.service.linkAgent({
+      botName: "bot-one",
+      workspaceName: "main",
+      threadId: THREAD,
+      name: "agent-one",
+    });
+    await context.registry.setDesiredState(running.id, "running");
+    context.tmux.hasSession.mockResolvedValue(true);
+    context.tmux.start.mockClear();
+
+    const restored = await context.service.restoreRunningAgents();
+
+    expect(restored).toEqual({
+      alreadyRunning: [{ id: running.id, name: "agent-one", tmuxSession: running.tmuxSession }],
+      started: [],
+    });
+    expect(context.tmux.start).not.toHaveBeenCalled();
+  });
+
+  it("attempts every desired agent and reports a restore failure after independent starts", async () => {
+    const context = await fixture();
+    await context.service.registerBot({ name: "bot-one", ownerUserId: OWNER, token: "secret" });
+    await context.service.addWorkspace(workspace);
+    const first = await context.service.linkAgent({
+      botName: "bot-one",
+      workspaceName: "main",
+      threadId: THREAD,
+      name: "agent-one",
+    });
+    await context.registry.setDesiredState(first.id, "running");
+    context.discord.verify.mockResolvedValueOnce({
+      applicationId: "200000000000000002",
+      botUserId: "300000000000000002",
+    });
+    await context.service.registerBot({
+      name: "bot-two",
+      ownerUserId: OWNER,
+      token: "other-secret",
+    });
+    await mkdir(context.paths.instanceInboxDirectory(OTHER_INSTANCE), {
+      mode: 0o700,
+      recursive: true,
+    });
+    const second = await context.registry.createBinding({
+      id: OTHER_INSTANCE,
+      name: "agent-two",
+      botName: "bot-two",
+      threadId: "20000000-0000-4000-8000-000000000002",
+      workspace: "main",
+      tmuxSession: "codex-discord-other",
+    });
+    await context.registry.setDesiredState(second.id, "running");
+    context.tmux.hasSession.mockResolvedValue(false);
+    context.tmux.start.mockRejectedValueOnce(new Error("first runner failed"));
+
+    await expect(context.service.restoreRunningAgents()).rejects.toMatchObject({ code: "RUNTIME" });
+    expect(context.tmux.start).toHaveBeenCalledWith(first.id, first.tmuxSession);
+    expect(context.tmux.start).toHaveBeenCalledWith(second.id, second.tmuxSession);
+  });
+
   it("records an idempotent local reconciliation request only for a terminal agent tombstone", async () => {
     const context = await fixture();
     await context.service.registerBot({ name: "bot-one", ownerUserId: OWNER, token: "secret" });

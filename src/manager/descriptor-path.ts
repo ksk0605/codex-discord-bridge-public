@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readlink as nodeReadlink } from "node:fs/promises";
 import { isAbsolute, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
@@ -48,6 +49,16 @@ export interface FdPathHelperDescriptorPathResolverOptions {
   readonly run?: DescriptorPathProcessRunner["run"];
   readonly maxOutputBytes?: number;
   readonly timeoutMs?: number;
+}
+
+export interface ProcFdDescriptorPathResolverOptions {
+  readonly readlink?: (path: string) => Promise<string>;
+}
+
+export interface DefaultDescriptorPathResolverOptions {
+  readonly createFdPathHelperResolver?: () => DescriptorPathResolver;
+  readonly createProcFdResolver?: () => DescriptorPathResolver;
+  readonly platform?: NodeJS.Platform;
 }
 
 function positiveSafeInteger(name: string, value: number, maximum: number): number {
@@ -204,5 +215,48 @@ export class FdPathHelperDescriptorPathResolver implements DescriptorPathResolve
   }
 }
 
+export class ProcFdDescriptorPathResolver implements DescriptorPathResolver {
+  readonly #readlink: (path: string) => Promise<string>;
+
+  constructor(options: ProcFdDescriptorPathResolverOptions = {}) {
+    this.#readlink = options.readlink ?? nodeReadlink;
+  }
+
+  async resolve(descriptor: number): Promise<string> {
+    if (!Number.isSafeInteger(descriptor) || descriptor < 0) {
+      throw resolutionFailure();
+    }
+
+    try {
+      const path = await this.#readlink(`/proc/self/fd/${descriptor}`);
+      if (!safeAbsolutePath(path) || path.endsWith(" (deleted)")) {
+        throw resolutionFailure();
+      }
+      return path;
+    } catch {
+      throw resolutionFailure();
+    }
+  }
+}
+
+export function createDefaultDescriptorPathResolver(
+  options: DefaultDescriptorPathResolverOptions = {},
+): DescriptorPathResolver {
+  const platform = options.platform ?? process.platform;
+  if (platform === "darwin") {
+    return (
+      options.createFdPathHelperResolver ?? (() => new FdPathHelperDescriptorPathResolver())
+    )();
+  }
+  if (platform === "linux") {
+    return (options.createProcFdResolver ?? (() => new ProcFdDescriptorPathResolver()))();
+  }
+  throw new BridgeError(
+    "CONFIGURATION",
+    `Unsupported descriptor-path platform: ${platform}.`,
+    "Run the bridge on macOS or Linux.",
+  );
+}
+
 export const defaultDescriptorPathResolver: DescriptorPathResolver =
-  new FdPathHelperDescriptorPathResolver();
+  createDefaultDescriptorPathResolver();

@@ -537,7 +537,7 @@ describe("verifyBotToken", () => {
   });
 
   it("preserves realistic Discord token punctuation", async () => {
-    const token = ["MTAx", "abc_DEF-ghi", "jkl-123_XYZ"].join(".");
+    const token = "test-token.segment_with_underscore.segment-with-hyphen";
     let fetchCalls = 0;
     const fetchImplementation: typeof fetch = async () => {
       fetchCalls += 1;

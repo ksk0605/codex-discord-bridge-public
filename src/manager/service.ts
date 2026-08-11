@@ -15,7 +15,7 @@ import type {
   WorkspaceProfile,
 } from "../domain/schemas.js";
 import { DiscordSnowflakeSchema, NameSchema } from "../domain/schemas.js";
-import { KeychainStore } from "../secrets/keychain.js";
+import { createDefaultCredentialStore } from "../secrets/platform.js";
 import { accessPolicyRevision, RegistryStore } from "../storage/registry.js";
 import { DEFAULT_SUPERVISOR_PATH, TmuxController } from "./tmux.js";
 import { WorkspaceNormalizer } from "./workspaces.js";
@@ -103,6 +103,17 @@ export interface ProgressReconciliationRequest {
   readonly threadId: string;
 }
 
+export interface RestoredAgent {
+  readonly id: string;
+  readonly name: string;
+  readonly tmuxSession: string;
+}
+
+export interface RestoreRunningAgentsResult {
+  readonly alreadyRunning: readonly RestoredAgent[];
+  readonly started: readonly RestoredAgent[];
+}
+
 function ownValue<T>(record: Record<string, T>, key: string, label: string): T {
   const value = Object.hasOwn(record, key) ? record[key] : undefined;
   if (value === undefined) throw new BridgeError("NOT_FOUND", `${label} not found: ${key}`);
@@ -167,6 +178,14 @@ function defaultBindingName(botName: string): string {
 
 function tmuxSession(instanceId: string): string {
   return `codex-discord-${instanceId.slice(0, 8)}`;
+}
+
+function restoredAgent(binding: AgentBinding): RestoredAgent {
+  return Object.freeze({
+    id: binding.id,
+    name: binding.name,
+    tmuxSession: binding.tmuxSession,
+  });
 }
 
 export class ManagerService {
@@ -392,6 +411,49 @@ export class ManagerService {
     return await this.start(binding.id);
   }
 
+  async restoreRunningAgents(): Promise<RestoreRunningAgentsResult> {
+    const desired = Object.values((await this.options.registry.read()).bindings)
+      .filter((binding) => binding.desiredState === "running")
+      .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+    const alreadyRunning: RestoredAgent[] = [];
+    const failed: string[] = [];
+    const started: RestoredAgent[] = [];
+
+    for (const binding of desired) {
+      try {
+        if (await this.options.tmux.hasSession(binding.tmuxSession)) {
+          alreadyRunning.push(restoredAgent(binding));
+          continue;
+        }
+        try {
+          await this.options.tmux.start(binding.id, binding.tmuxSession);
+        } catch (error) {
+          if (await this.options.tmux.hasSession(binding.tmuxSession).catch(() => false)) {
+            alreadyRunning.push(restoredAgent(binding));
+            continue;
+          }
+          throw error;
+        }
+        started.push(restoredAgent(binding));
+      } catch {
+        failed.push(binding.id);
+        await this.options.registry.markObservedState(binding.id, "failed").catch(() => undefined);
+      }
+    }
+
+    if (failed.length > 0) {
+      throw new BridgeError(
+        "RUNTIME",
+        `Unable to restore ${failed.length} desired agent${failed.length === 1 ? "" : "s"}.`,
+        "Inspect `codex-discord status`, then rerun `codex-discord restore` after fixing tmux or runtime configuration.",
+      );
+    }
+    return Object.freeze({
+      alreadyRunning: Object.freeze(alreadyRunning),
+      started: Object.freeze(started),
+    });
+  }
+
   async status(target?: string): Promise<unknown> {
     if (target === undefined) {
       const document = await this.options.registry.read();
@@ -545,7 +607,7 @@ export async function createDefaultManagerService(
   return new ManagerService({
     paths,
     registry: new RegistryStore({ registryPath: paths.registryPath }),
-    keychain: new KeychainStore(),
+    keychain: createDefaultCredentialStore(),
     discord: {
       verify: (token) => verifyBotToken(token),
       registerCommands: (applicationId, token) => registerApplicationCommands(applicationId, token),

@@ -40,7 +40,7 @@ import {
   type RunnerComponentContext,
   type RunnerRegistryRecord,
 } from "../runner.js";
-import { KeychainStore } from "../secrets/keychain.js";
+import { createDefaultCredentialStore } from "../secrets/platform.js";
 import { RegistryStore } from "../storage/registry.js";
 import {
   AgentRuntime,
@@ -559,7 +559,7 @@ export function createProductionRunner(
       load: async (id) => bindingRecord(await registry.read(), id),
       markState: async (state) => await registry.markObservedState(instanceId, state),
     },
-    keychain: new KeychainStore(),
+    keychain: createDefaultCredentialStore(),
     createComponent: (context) => createProductionAgentComponent(context),
   });
 }

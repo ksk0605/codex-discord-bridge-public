@@ -20,6 +20,10 @@ function fixture() {
     start: vi.fn(async () => ({ observedState: "starting" })),
     stop: vi.fn(async () => ({ observedState: "stopped" })),
     restart: vi.fn(async () => ({ observedState: "starting" })),
+    restoreRunningAgents: vi.fn(async () => ({
+      alreadyRunning: [{ id: "instance-one", name: "agent-one", tmuxSession: "session-one" }],
+      started: [{ id: "instance-two", name: "agent-two", tmuxSession: "session-two" }],
+    })),
     status: vi.fn(async () => [{ name: "agent-one", tmuxRunning: true }]),
     requestProgressReconciliation: vi.fn(async (_target: string, threadId: string) => ({
       agentId: "instance",
@@ -65,6 +69,27 @@ describe("codex-discord CLI", () => {
       data: [{ name: "agent-one", tmuxRunning: true }],
     });
     expect(context.stderr()).toBe("");
+  });
+
+  it("restores every desired agent through one non-interactive command", async () => {
+    const context = fixture();
+
+    expect(
+      await runCli(["--json", "restore"], {
+        service: context.service,
+        streams: context.streams,
+      }),
+    ).toBe(0);
+
+    expect(context.service.restoreRunningAgents).toHaveBeenCalledOnce();
+    expect(JSON.parse(context.stdout())).toEqual({
+      ok: true,
+      command: "restore",
+      data: {
+        alreadyRunning: [{ id: "instance-one", name: "agent-one", tmuxSession: "session-one" }],
+        started: [{ id: "instance-two", name: "agent-two", tmuxSession: "session-two" }],
+      },
+    });
   });
 
   it("reads a bot token outside argv and never writes it to output", async () => {

@@ -1,7 +1,7 @@
 {
   "name": "codex-discord-bridge",
   "version": "0.1.0",
-  "description": "A macOS Discord-to-Codex bridge",
+  "description": "A Discord-to-Codex bridge for macOS and Linux",
   "homepage": "https://github.com/ksk0605/codex-discord-bridge",
   "repository": {
     "type": "git",
@@ -17,6 +17,7 @@
     "dist",
     "native/fd-path-helper.c",
     "native/keychain-helper.m",
+    "scripts/build-native.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -24,22 +25,24 @@
     "build": "tsc -p tsconfig.json",
     "check": "biome check . && tsc --noEmit -p tsconfig.json && tsc -p tsconfig.test.json",
     "format": "biome format --write .",
-    "pretest": "npm run native:build:fdpath",
+    "pretest": "npm run native:build",
     "test": "vitest run",
     "test:watch": "vitest",
     "protocol:check": "node dist/app-server/check-protocol.js",
     "protocol:check:build": "npm run build && npm run protocol:check",
-    "native:build:fdpath": "mkdir -p dist/native && /usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror native/fd-path-helper.c -o dist/native/fd-path-helper",
-    "native:build": "npm run native:build:fdpath && /usr/bin/clang -fobjc-arc -O -Wall -Wextra -Werror native/keychain-helper.m -framework Foundation -framework Security -o dist/native/keychain-helper",
+    "native:build:fdpath": "node scripts/build-native.mjs --only fd-path",
+    "native:build": "node scripts/build-native.mjs",
     "prepack": "npm run native:build && npm run check && npm test && npm run build"
   },
   "os": [
-    "darwin"
+    "darwin",
+    "linux"
   ],
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
+    "@aws-sdk/client-ssm": "3.1107.0",
     "@inquirer/prompts": "7.10.1",
     "ajv": "^8.20.0",
     "commander": "14.0.3",

@@ -1,9 +1,12 @@
-import { pathToFileURL } from "node:url";
+import { homedir } from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { password } from "@inquirer/prompts";
 import { Command, CommanderError, Option } from "commander";
+import { resolveStatePaths } from "./config/paths.js";
 import { BridgeError, exitCodeFor } from "./domain/errors.js";
 import type { WorkspaceProfile } from "./domain/schemas.js";
 import { createDefaultManagerService, type ManagerService } from "./manager/service.js";
+import { renderSystemdUnits } from "./systemd/units.js";
 
 export interface CliStreams {
   writeOut(text: string): void;
@@ -287,6 +290,56 @@ export async function runCli(
     .command("status")
     .argument("[target]")
     .action(action("status", (target?: string) => service.status(target)));
+  program.command("restore").action(action("restore", async () => service.restoreRunningAgents()));
+
+  const systemd = program.command("systemd");
+  systemd
+    .command("render")
+    .requiredOption("--user <system-user>")
+    .option("--home <absolute-path>")
+    .option("--state-root <absolute-path>")
+    .option("--working-directory <absolute-path>")
+    .option("--node <absolute-path>")
+    .option("--cli <absolute-path>")
+    .option("--path <search-path>")
+    .option("--aws-region <region>")
+    .option("--ssm-kms-key-id <key-id>")
+    .option("--ssm-prefix <parameter-prefix>")
+    .action(
+      action(
+        "systemd render",
+        async (options: {
+          awsRegion?: string;
+          cli?: string;
+          home?: string;
+          node?: string;
+          path?: string;
+          ssmKmsKeyId?: string;
+          ssmPrefix?: string;
+          stateRoot?: string;
+          user: string;
+          workingDirectory?: string;
+        }) => {
+          const awsRegion =
+            options.awsRegion ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
+          const ssmKmsKeyId = options.ssmKmsKeyId ?? process.env.CODEX_DISCORD_SSM_KMS_KEY_ID;
+          const ssmPrefix = options.ssmPrefix ?? process.env.CODEX_DISCORD_SSM_PREFIX;
+          return renderSystemdUnits({
+            cliPath: options.cli ?? fileURLToPath(new URL("./cli.js", import.meta.url)),
+            ...(awsRegion === undefined ? {} : { awsRegion }),
+            home: options.home ?? homedir(),
+            nodePath: options.node ?? process.execPath,
+            path: options.path ?? process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+            ...(ssmKmsKeyId === undefined ? {} : { ssmKmsKeyId }),
+            ...(ssmPrefix === undefined ? {} : { ssmPrefix }),
+            stateRoot:
+              options.stateRoot ?? resolveStatePaths(process.env.CODEX_DISCORD_STATE_ROOT).root,
+            user: options.user,
+            workingDirectory: options.workingDirectory ?? process.cwd(),
+          });
+        },
+      ),
+    );
 
   const progress = program.command("progress");
   progress

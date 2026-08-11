@@ -12,10 +12,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
-const FD_PATH_BUILD_COMMAND =
-  "mkdir -p dist/native && /usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror native/fd-path-helper.c -o dist/native/fd-path-helper";
-const NATIVE_BUILD_COMMAND =
-  "npm run native:build:fdpath && /usr/bin/clang -fobjc-arc -O -Wall -Wextra -Werror native/keychain-helper.m -framework Foundation -framework Security -o dist/native/keychain-helper";
+const FD_PATH_BUILD_COMMAND = "node scripts/build-native.mjs --only fd-path";
+const NATIVE_BUILD_COMMAND = "node scripts/build-native.mjs";
 const PUBLIC_PROJECT_URL = "https://github.com/ksk0605/codex-discord-bridge";
 const SECURITY_OVERRIDES = {
   "fast-uri": "3.1.5",
@@ -23,28 +21,6 @@ const SECURITY_OVERRIDES = {
   postcss: "8.5.24",
   undici: "6.28.0",
 } as const;
-const MACOS_NODE_22_CI = `name: CI
-
-on:
-  push:
-  pull_request:
-
-jobs:
-  test:
-    runs-on: macos-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - run: npm run native:build
-      - run: npm run check
-      - run: npm test
-      - run: npm run build
-`;
 const CHECKER_RUNTIME_PACKAGES = [
   "ajv",
   "fast-deep-equal",
@@ -94,29 +70,32 @@ afterEach(async () => {
 });
 
 describe("native helper package contract", () => {
-  it("runs check, test, and build on macOS Node 22 without lifecycle scripts", async () => {
+  it("tests supported macOS and Linux hosts without lifecycle scripts", async () => {
     const workflow = await readFile(join(PACKAGE_ROOT, ".github/workflows/ci.yml"), "utf8");
 
-    expect(workflow).toBe(MACOS_NODE_22_CI);
+    expect(workflow).toContain("os: [macos-latest, ubuntu-latest]");
+    expect(workflow).toContain(`runs-on: \${{ matrix.os }}`);
+    expect(workflow).toContain("- run: npm run native:build");
+    expect(workflow).toMatch(/- run: npm run build\n\s+- run: npm run check/u);
     expect(workflow).not.toContain("protocol:check");
   });
 
-  it("builds both native helpers before prepack validation and TypeScript output", async () => {
+  it("uses a platform-aware native build dispatcher before prepack validation and TypeScript output", async () => {
     const packageMetadata = await readPackageMetadata();
 
     expect(packageMetadata.scripts?.["native:build:fdpath"]).toBe(FD_PATH_BUILD_COMMAND);
     expect(packageMetadata.scripts?.["native:build"]).toBe(NATIVE_BUILD_COMMAND);
-    expect(packageMetadata.scripts?.pretest).toBe("npm run native:build:fdpath");
+    expect(packageMetadata.scripts?.pretest).toBe("npm run native:build");
     expect(packageMetadata.scripts?.prepack).toBe(
       "npm run native:build && npm run check && npm test && npm run build",
     );
   });
 
-  it("declares the macOS package and host-architecture helper limitation", async () => {
+  it("declares macOS and Linux support while shipping the macOS helper source", async () => {
     const packageMetadata = await readPackageMetadata();
     const readme = await readFile(join(PACKAGE_ROOT, "README.md"), "utf8");
 
-    expect(packageMetadata.os).toEqual(["darwin"]);
+    expect(packageMetadata.os).toEqual(["darwin", "linux"]);
     expect(CODEX_DISCORD_BRIDGE_PROJECT_URL).toBe(PUBLIC_PROJECT_URL);
     expect(packageMetadata.homepage).toBe(PUBLIC_PROJECT_URL);
     expect(packageMetadata.license).toBe("MIT");
@@ -132,6 +111,7 @@ describe("native helper package contract", () => {
         "dist",
         "native/fd-path-helper.c",
         "native/keychain-helper.m",
+        "scripts/build-native.mjs",
         "README.md",
         "LICENSE",
       ]),
@@ -142,7 +122,40 @@ describe("native helper package contract", () => {
     expect(readme).toContain("publisher machine's current architecture");
   });
 
-  it("packs executable publisher-host architecture helpers without invoking prepack", async () => {
+  it("succeeds without native helpers when targeting Linux", async () => {
+    const outputDirectory = await mkdtemp(join(tmpdir(), "codex-discord-linux-native-"));
+    temporaryDirectories.push(outputDirectory);
+
+    await execFileAsync(
+      process.execPath,
+      ["scripts/build-native.mjs", "--output-directory", outputDirectory, "--platform", "linux"],
+      { cwd: PACKAGE_ROOT, encoding: "utf8", timeout: 10_000 },
+    );
+
+    await expect(access(join(outputDirectory, "fd-path-helper"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(access(join(outputDirectory, "keychain-helper"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  const itOnDarwin = process.platform === "darwin" ? it : it.skip;
+  itOnDarwin("builds the Keychain and descriptor helpers when targeting macOS", async () => {
+    const outputDirectory = await mkdtemp(join(tmpdir(), "codex-discord-darwin-native-"));
+    temporaryDirectories.push(outputDirectory);
+
+    await execFileAsync(
+      process.execPath,
+      ["scripts/build-native.mjs", "--output-directory", outputDirectory, "--platform", "darwin"],
+      { cwd: PACKAGE_ROOT, encoding: "utf8", timeout: 20_000 },
+    );
+
+    await expect(access(join(outputDirectory, "fd-path-helper"))).resolves.toBeUndefined();
+    await expect(access(join(outputDirectory, "keychain-helper"))).resolves.toBeUndefined();
+  });
+
+  itOnDarwin("packs executable macOS helpers without invoking prepack", async () => {
     const packageMetadata = await readPackageMetadata();
     const packageDirectory = await mkdtemp(join(tmpdir(), "codex-discord-package-"));
     temporaryDirectories.push(packageDirectory);
