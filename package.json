@@ -2,10 +2,10 @@
   "name": "codex-discord-bridge",
   "version": "0.1.0",
   "description": "A Discord-to-Codex bridge for macOS and Linux",
-  "homepage": "https://github.com/ksk0605/codex-discord-bridge",
+  "homepage": "https://github.com/ksk0605/codex-discord-bridge-public",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ksk0605/codex-discord-bridge.git"
+    "url": "git+https://github.com/ksk0605/codex-discord-bridge-public.git"
   },
   "license": "MIT",
   "type": "module",

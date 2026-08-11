@@ -14,7 +14,7 @@ const execFileAsync = promisify(execFile);
 const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const FD_PATH_BUILD_COMMAND = "node scripts/build-native.mjs --only fd-path";
 const NATIVE_BUILD_COMMAND = "node scripts/build-native.mjs";
-const PUBLIC_PROJECT_URL = "https://github.com/ksk0605/codex-discord-bridge";
+const PUBLIC_PROJECT_URL = "https://github.com/ksk0605/codex-discord-bridge-public";
 const SECURITY_OVERRIDES = {
   "fast-uri": "3.1.5",
   nanoid: "3.3.17",
@@ -101,7 +101,7 @@ describe("native helper package contract", () => {
     expect(packageMetadata.license).toBe("MIT");
     expect(packageMetadata.repository).toEqual({
       type: "git",
-      url: "git+https://github.com/ksk0605/codex-discord-bridge.git",
+      url: "git+https://github.com/ksk0605/codex-discord-bridge-public.git",
     });
     expect(packageMetadata.overrides).toEqual(SECURITY_OVERRIDES);
     await expect(readFile(join(PACKAGE_ROOT, "LICENSE"), "utf8")).resolves.toContain("MIT License");

@@ -344,7 +344,7 @@ afterEach(async () => {
 describe("verifyBotToken", () => {
   it("uses the documented fixed Discord bot User-Agent", () => {
     expect(DISCORD_API_USER_AGENT).toBe(
-      "DiscordBot (https://github.com/ksk0605/codex-discord-bridge, 0.1.0)",
+      "DiscordBot (https://github.com/ksk0605/codex-discord-bridge-public, 0.1.0)",
     );
   });
 

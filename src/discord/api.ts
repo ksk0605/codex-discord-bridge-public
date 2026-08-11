@@ -4,7 +4,8 @@ import { DiscordSnowflakeSchema } from "../domain/schemas.js";
 import { CODEX_COMMAND } from "./commands.js";
 
 export const DISCORD_API_BASE_URL = "https://discord.com/api/v10";
-export const CODEX_DISCORD_BRIDGE_PROJECT_URL = "https://github.com/ksk0605/codex-discord-bridge";
+export const CODEX_DISCORD_BRIDGE_PROJECT_URL =
+  "https://github.com/ksk0605/codex-discord-bridge-public";
 export const CODEX_DISCORD_BRIDGE_VERSION = "0.1.0";
 export const DISCORD_API_USER_AGENT = `DiscordBot (${CODEX_DISCORD_BRIDGE_PROJECT_URL}, ${CODEX_DISCORD_BRIDGE_VERSION})`;
 export const MAX_DISCORD_TOKEN_BYTES = 16 * 1024;
