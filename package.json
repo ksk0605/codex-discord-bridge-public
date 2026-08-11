@@ -1,0 +1,71 @@
+{
+  "name": "codex-discord-bridge",
+  "version": "0.1.0",
+  "description": "A macOS Discord-to-Codex bridge",
+  "homepage": "https://github.com/ksk0605/codex-discord-bridge",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ksk0605/codex-discord-bridge.git"
+  },
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "codex-discord": "dist/cli.js",
+    "codex-discord-runner": "dist/runner.js"
+  },
+  "files": [
+    "dist",
+    "native/fd-path-helper.c",
+    "native/keychain-helper.m",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "biome check . && tsc --noEmit -p tsconfig.json && tsc -p tsconfig.test.json",
+    "format": "biome format --write .",
+    "pretest": "npm run native:build:fdpath",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "protocol:check": "node dist/app-server/check-protocol.js",
+    "protocol:check:build": "npm run build && npm run protocol:check",
+    "native:build:fdpath": "mkdir -p dist/native && /usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror native/fd-path-helper.c -o dist/native/fd-path-helper",
+    "native:build": "npm run native:build:fdpath && /usr/bin/clang -fobjc-arc -O -Wall -Wextra -Werror native/keychain-helper.m -framework Foundation -framework Security -o dist/native/keychain-helper",
+    "prepack": "npm run native:build && npm run check && npm test && npm run build"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "7.10.1",
+    "ajv": "^8.20.0",
+    "commander": "14.0.3",
+    "discord.js": "^14.27.0",
+    "mdast-util-to-string": "^4.0.0",
+    "proper-lockfile": "^4.1.2",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "string-width": "^8.2.2",
+    "unified": "^11.0.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
+    "@types/mdast": "^4.0.4",
+    "@types/node": "^22.20.1",
+    "@types/proper-lockfile": "^4.1.4",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vite": "6.4.3",
+    "vitest": "3.2.7"
+  },
+  "overrides": {
+    "fast-uri": "3.1.5",
+    "nanoid": "3.3.17",
+    "postcss": "8.5.24",
+    "undici": "6.28.0"
+  }
+}
