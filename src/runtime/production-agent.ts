@@ -559,7 +559,7 @@ export function createProductionRunner(
       load: async (id) => bindingRecord(await registry.read(), id),
       markState: async (state) => await registry.markObservedState(instanceId, state),
     },
-    keychain: createDefaultCredentialStore(),
+    keychain: createDefaultCredentialStore({ stateRoot: paths.root }),
     createComponent: (context) => createProductionAgentComponent(context),
   });
 }

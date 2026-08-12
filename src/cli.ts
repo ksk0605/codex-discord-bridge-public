@@ -302,6 +302,7 @@ export async function runCli(
     .option("--node <absolute-path>")
     .option("--cli <absolute-path>")
     .option("--path <search-path>")
+    .option("--credential-store <file|ssm>")
     .option("--aws-region <region>")
     .option("--ssm-kms-key-id <key-id>")
     .option("--ssm-prefix <parameter-prefix>")
@@ -311,6 +312,7 @@ export async function runCli(
         async (options: {
           awsRegion?: string;
           cli?: string;
+          credentialStore?: string;
           home?: string;
           node?: string;
           path?: string;
@@ -320,13 +322,22 @@ export async function runCli(
           user: string;
           workingDirectory?: string;
         }) => {
-          const awsRegion =
-            options.awsRegion ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
-          const ssmKmsKeyId = options.ssmKmsKeyId ?? process.env.CODEX_DISCORD_SSM_KMS_KEY_ID;
-          const ssmPrefix = options.ssmPrefix ?? process.env.CODEX_DISCORD_SSM_PREFIX;
+          const credentialStore =
+            options.credentialStore ?? process.env.CODEX_DISCORD_CREDENTIAL_STORE;
+          const usesSsm = credentialStore === "ssm";
+          const awsRegion = usesSsm
+            ? (options.awsRegion ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION)
+            : options.awsRegion;
+          const ssmKmsKeyId = usesSsm
+            ? (options.ssmKmsKeyId ?? process.env.CODEX_DISCORD_SSM_KMS_KEY_ID)
+            : options.ssmKmsKeyId;
+          const ssmPrefix = usesSsm
+            ? (options.ssmPrefix ?? process.env.CODEX_DISCORD_SSM_PREFIX)
+            : options.ssmPrefix;
           return renderSystemdUnits({
             cliPath: options.cli ?? fileURLToPath(new URL("./cli.js", import.meta.url)),
             ...(awsRegion === undefined ? {} : { awsRegion }),
+            ...(credentialStore === undefined ? {} : { credentialStore }),
             home: options.home ?? homedir(),
             nodePath: options.node ?? process.execPath,
             path: options.path ?? process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",

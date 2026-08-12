@@ -607,7 +607,7 @@ export async function createDefaultManagerService(
   return new ManagerService({
     paths,
     registry: new RegistryStore({ registryPath: paths.registryPath }),
-    keychain: createDefaultCredentialStore(),
+    keychain: createDefaultCredentialStore({ stateRoot: paths.root }),
     discord: {
       verify: (token) => verifyBotToken(token),
       registerCommands: (applicationId, token) => registerApplicationCommands(applicationId, token),

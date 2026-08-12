@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CredentialStore } from "../../src/secrets/credentials.js";
+import type { FileCredentialStoreOptions } from "../../src/secrets/file.js";
 import { createDefaultCredentialStore } from "../../src/secrets/platform.js";
 
 function store(): CredentialStore {
@@ -13,10 +14,12 @@ function store(): CredentialStore {
 
 describe("createDefaultCredentialStore", () => {
   it("selects the macOS Keychain store only on Darwin", () => {
+    const file = store();
     const keychain = store();
     const ssm = store();
 
     const selected = createDefaultCredentialStore({
+      createFileStore: () => file,
       createKeychainStore: () => keychain,
       createSsmStore: () => ssm,
       platform: "darwin",
@@ -25,19 +28,64 @@ describe("createDefaultCredentialStore", () => {
     expect(selected).toBe(keychain);
   });
 
-  it("selects the SSM credential store on Linux", () => {
+  it("selects local file credentials by default on Linux even with AWS settings", () => {
+    const file = store();
     const keychain = store();
+    const ssm = store();
+    let fileOptions: FileCredentialStoreOptions | undefined;
+
+    const selected = createDefaultCredentialStore({
+      createFileStore: (options) => {
+        fileOptions = options;
+        return file;
+      },
+      createKeychainStore: () => keychain,
+      createSsmStore: () => ssm,
+      environment: {
+        AWS_REGION: "ap-northeast-2",
+        CODEX_DISCORD_SSM_KMS_KEY_ID: "alias/codex-discord-bridge",
+        CODEX_DISCORD_SSM_PREFIX: "/production/codex-discord/bots",
+      },
+      platform: "linux",
+      stateRoot: "/private/bridge-state",
+    });
+
+    expect(selected).toBe(file);
+    expect(fileOptions).toEqual({ stateRoot: "/private/bridge-state" });
+  });
+
+  it("accepts an explicit local file selection on Linux", () => {
+    const file = store();
+    let fileOptions: FileCredentialStoreOptions | undefined;
+
+    const selected = createDefaultCredentialStore({
+      createFileStore: (options) => {
+        fileOptions = options;
+        return file;
+      },
+      environment: { CODEX_DISCORD_CREDENTIAL_STORE: "file" },
+      platform: "linux",
+      stateRoot: "/private/bridge-state",
+    });
+
+    expect(selected).toBe(file);
+    expect(fileOptions).toEqual({ stateRoot: "/private/bridge-state" });
+  });
+
+  it("selects SSM only when explicitly requested on Linux", () => {
+    const file = store();
     const ssm = store();
     let ssmOptions: unknown;
 
     const selected = createDefaultCredentialStore({
-      createKeychainStore: () => keychain,
+      createFileStore: () => file,
       createSsmStore: (options) => {
         ssmOptions = options;
         return ssm;
       },
       environment: {
         AWS_REGION: "ap-northeast-2",
+        CODEX_DISCORD_CREDENTIAL_STORE: "ssm",
         CODEX_DISCORD_SSM_KMS_KEY_ID: "alias/codex-discord-bridge",
         CODEX_DISCORD_SSM_PREFIX: "/production/codex-discord/bots",
       },
@@ -52,9 +100,27 @@ describe("createDefaultCredentialStore", () => {
     });
   });
 
+  it("rejects an unsupported Linux credential-store mode", () => {
+    const configuredValue = "unexpected-sensitive-mode-value";
+    let failure: unknown;
+    try {
+      createDefaultCredentialStore({
+        environment: { CODEX_DISCORD_CREDENTIAL_STORE: configuredValue },
+        platform: "linux",
+        stateRoot: "/private/bridge-state",
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({ code: "CONFIGURATION" });
+    expect(failure).not.toMatchObject({ message: expect.stringContaining(configuredValue) });
+  });
+
   it("fails closed on unsupported platforms", () => {
     expect(() =>
       createDefaultCredentialStore({
+        createFileStore: store,
         createKeychainStore: store,
         createSsmStore: store,
         platform: "win32",

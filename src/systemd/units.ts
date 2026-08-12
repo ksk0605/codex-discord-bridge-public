@@ -4,6 +4,7 @@ import { BridgeError } from "../domain/errors.js";
 export interface SystemdUnitOptions {
   readonly cliPath: string;
   readonly awsRegion?: string;
+  readonly credentialStore?: string;
   readonly home: string;
   readonly nodePath: string;
   readonly path: string;
@@ -51,6 +52,16 @@ function optionalSystemdValue(value: unknown, label: string): string | undefined
   return value === undefined ? undefined : systemdValue(value, label);
 }
 
+function credentialStore(value: unknown): "file" | "ssm" {
+  if (value === undefined || value === "file") return "file";
+  if (value === "ssm") return "ssm";
+  throw new BridgeError(
+    "INVALID_ARGUMENT",
+    "Invalid systemd credential-store configuration.",
+    "Choose file or ssm for the systemd credential store.",
+  );
+}
+
 function systemdQuote(value: string): string {
   const escaped = value
     .replace(/\\/gu, "\\\\")
@@ -74,6 +85,7 @@ export function renderSystemdUnits(options: SystemdUnitOptions): SystemdUnitFile
   }
   const cliPath = absolutePath(options.cliPath, "CLI path");
   const awsRegion = optionalSystemdValue(options.awsRegion, "AWS region");
+  const selectedCredentialStore = credentialStore(options.credentialStore);
   const home = absolutePath(options.home, "home path");
   const nodePath = absolutePath(options.nodePath, "Node path");
   const path = systemdValue(options.path, "PATH");
@@ -82,6 +94,16 @@ export function renderSystemdUnits(options: SystemdUnitOptions): SystemdUnitFile
   const stateRoot = absolutePath(options.stateRoot, "state root");
   const systemUser = user(options.user);
   const workingDirectory = absolutePath(options.workingDirectory, "working directory");
+  if (
+    selectedCredentialStore !== "ssm" &&
+    (awsRegion !== undefined || ssmKmsKeyId !== undefined || ssmPrefix !== undefined)
+  ) {
+    throw new BridgeError(
+      "INVALID_ARGUMENT",
+      "Invalid systemd credential-store configuration.",
+      "Select the ssm credential store before supplying AWS or SSM settings.",
+    );
+  }
 
   const service = `${[
     "[Unit]",
@@ -95,12 +117,17 @@ export function renderSystemdUnits(options: SystemdUnitOptions): SystemdUnitFile
     `WorkingDirectory=${systemdQuote(workingDirectory)}`,
     `Environment=${systemdQuote(`HOME=${home}`)}`,
     `Environment=${systemdQuote(`PATH=${path}`)}`,
-    ...(awsRegion === undefined ? [] : [`Environment=${systemdQuote(`AWS_REGION=${awsRegion}`)}`]),
     `Environment=${systemdQuote(`CODEX_DISCORD_STATE_ROOT=${stateRoot}`)}`,
-    ...(ssmKmsKeyId === undefined
+    ...(selectedCredentialStore === "ssm"
+      ? [`Environment=${systemdQuote("CODEX_DISCORD_CREDENTIAL_STORE=ssm")}`]
+      : []),
+    ...(selectedCredentialStore === "ssm" && awsRegion !== undefined
+      ? [`Environment=${systemdQuote(`AWS_REGION=${awsRegion}`)}`]
+      : []),
+    ...(selectedCredentialStore !== "ssm" || ssmKmsKeyId === undefined
       ? []
       : [`Environment=${systemdQuote(`CODEX_DISCORD_SSM_KMS_KEY_ID=${ssmKmsKeyId}`)}`]),
-    ...(ssmPrefix === undefined
+    ...(selectedCredentialStore !== "ssm" || ssmPrefix === undefined
       ? []
       : [`Environment=${systemdQuote(`CODEX_DISCORD_SSM_PREFIX=${ssmPrefix}`)}`]),
     `ExecStart=${systemdQuote(nodePath)} ${systemdQuote(cliPath)} restore`,
