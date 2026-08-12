@@ -295,4 +295,82 @@ describe("codex-discord CLI", () => {
     expect(human.stdout()).toContain('"restartRequired": true');
     expect(human.stderr()).toBe("");
   });
+
+  it("does not inherit AWS settings into a default local systemd unit", async () => {
+    const context = fixture();
+    vi.stubEnv("AWS_REGION", "ap-northeast-2");
+    vi.stubEnv("CODEX_DISCORD_SSM_PREFIX", "/production/codex-discord/bots");
+    try {
+      expect(
+        await runCli(
+          [
+            "--json",
+            "systemd",
+            "render",
+            "--user",
+            "ec2-user",
+            "--home",
+            "/home/ec2-user",
+            "--state-root",
+            "/var/lib/codex-discord-bridge",
+            "--working-directory",
+            "/opt/codex-discord-bridge",
+            "--node",
+            "/usr/bin/node",
+            "--cli",
+            "/opt/codex-discord-bridge/dist/cli.js",
+            "--path",
+            "/usr/bin:/bin",
+          ],
+          { service: context.service, streams: context.streams },
+        ),
+      ).toBe(0);
+
+      const unit = JSON.parse(context.stdout()).data.service as string;
+      expect(unit).not.toContain("AWS_REGION");
+      expect(unit).not.toContain("CODEX_DISCORD_SSM_PREFIX");
+      expect(unit).not.toContain("CODEX_DISCORD_CREDENTIAL_STORE");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("renders explicit SSM mode into the systemd unit", async () => {
+    const context = fixture();
+    vi.stubEnv("AWS_REGION", "ap-northeast-2");
+    try {
+      expect(
+        await runCli(
+          [
+            "--json",
+            "systemd",
+            "render",
+            "--user",
+            "ec2-user",
+            "--home",
+            "/home/ec2-user",
+            "--state-root",
+            "/var/lib/codex-discord-bridge",
+            "--working-directory",
+            "/opt/codex-discord-bridge",
+            "--node",
+            "/usr/bin/node",
+            "--cli",
+            "/opt/codex-discord-bridge/dist/cli.js",
+            "--path",
+            "/usr/bin:/bin",
+            "--credential-store",
+            "ssm",
+          ],
+          { service: context.service, streams: context.streams },
+        ),
+      ).toBe(0);
+
+      const unit = JSON.parse(context.stdout()).data.service as string;
+      expect(unit).toContain('Environment="CODEX_DISCORD_CREDENTIAL_STORE=ssm"');
+      expect(unit).toContain('Environment="AWS_REGION=ap-northeast-2"');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

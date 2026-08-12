@@ -61,14 +61,16 @@ WantedBy=timers.target
     );
   });
 
-  it("passes non-secret custom SSM configuration to the restore service", () => {
+  it("passes non-secret custom SSM configuration only when SSM is explicit", () => {
     const units = renderSystemdUnits({
       ...options,
       awsRegion: "ap-northeast-2",
+      credentialStore: "ssm",
       ssmKmsKeyId: "alias/codex-discord-bridge",
       ssmPrefix: "/production/codex-discord/bots",
     });
 
+    expect(units.service).toContain('Environment="CODEX_DISCORD_CREDENTIAL_STORE=ssm"');
     expect(units.service).toContain(
       'Environment="CODEX_DISCORD_SSM_KMS_KEY_ID=alias/codex-discord-bridge"',
     );
@@ -78,10 +80,20 @@ WantedBy=timers.target
     );
   });
 
+  it("rejects SSM settings when the credential store is not SSM", () => {
+    expect(() =>
+      renderSystemdUnits({
+        ...options,
+        awsRegion: "ap-northeast-2",
+      }),
+    ).toThrow(/credential-store/u);
+  });
+
   it.each([
     ["relative cli path", { cliPath: "dist/cli.js" }],
     ["control character in state root", { stateRoot: "/var/lib/bridge\nExecStart=/bin/false" }],
     ["unsafe system user", { user: "ec2-user\nroot" }],
+    ["unsupported credential store", { credentialStore: "unsupported" }],
   ])("rejects %s", (_label, override) => {
     expect(() => renderSystemdUnits({ ...options, ...override })).toThrow(/Invalid systemd/u);
   });
