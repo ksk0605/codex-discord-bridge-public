@@ -36,6 +36,12 @@ function fixture() {
     allowUser: vi.fn(async () => ({ allowFrom: [] })),
     allowChannel: vi.fn(async () => ({ groups: {} })),
     getAccess: vi.fn(async () => ({ groups: {} })),
+    inject: vi.fn(async () => ({
+      agent: "check",
+      channelId: "400000000000000011",
+      messageId: "500000000000000001",
+    })),
+    configureInject: vi.fn(async () => ({ agent: "check", enabled: true, restartRequired: true })),
   } as unknown as ManagerService;
   return {
     service,
@@ -53,6 +59,107 @@ function fixture() {
 }
 
 describe("codex-discord CLI", () => {
+  it("injects a queued turn with default hop and mode", async () => {
+    const context = fixture();
+
+    expect(
+      await runCli(
+        ["--json", "inject", "check", "아침 브리핑 만들어서 올려", "--from", "cron:morning"],
+        {
+          service: context.service,
+          streams: context.streams,
+        },
+      ),
+    ).toBe(0);
+
+    expect(context.service.inject).toHaveBeenCalledWith("check", {
+      text: "아침 브리핑 만들어서 올려",
+      from: "cron:morning",
+      mode: "queue",
+      hop: 0,
+    });
+    expect(JSON.parse(context.stdout())).toMatchObject({ ok: true, command: "inject" });
+  });
+
+  it("passes interrupt mode, hop, and channel through to inject", async () => {
+    const context = fixture();
+
+    expect(
+      await runCli(
+        [
+          "inject",
+          "check",
+          "stop",
+          "--from",
+          "agent:chief",
+          "--mode",
+          "interrupt",
+          "--hop",
+          "1",
+          "--channel",
+          "400000000000000011",
+        ],
+        { service: context.service, streams: context.streams },
+      ),
+    ).toBe(0);
+
+    expect(context.service.inject).toHaveBeenCalledWith("check", {
+      text: "stop",
+      from: "agent:chief",
+      mode: "interrupt",
+      hop: 1,
+      channelId: "400000000000000011",
+    });
+  });
+
+  it("requires --from and rejects a non-numeric hop", async () => {
+    const missingFrom = fixture();
+    expect(
+      await runCli(["inject", "check", "x"], {
+        service: missingFrom.service,
+        streams: missingFrom.streams,
+      }),
+    ).not.toBe(0);
+
+    const badHop = fixture();
+    expect(
+      await runCli(["inject", "check", "x", "--from", "cron:a", "--hop", "two"], {
+        service: badHop.service,
+        streams: badHop.streams,
+      }),
+    ).not.toBe(0);
+
+    expect(missingFrom.service.inject).not.toHaveBeenCalled();
+    expect(badHop.service.inject).not.toHaveBeenCalled();
+  });
+
+  it("enables inject with a log channel", async () => {
+    const context = fixture();
+
+    expect(
+      await runCli(["inject-config", "check", "--log-channel", "400000000000000020"], {
+        service: context.service,
+        streams: context.streams,
+      }),
+    ).toBe(0);
+
+    expect(context.service.configureInject).toHaveBeenCalledWith("check", {
+      enabled: true,
+      logChannelId: "400000000000000020",
+    });
+  });
+
+  it("disables inject", async () => {
+    const context = fixture();
+
+    await runCli(["inject-config", "check", "--disable"], {
+      service: context.service,
+      streams: context.streams,
+    });
+
+    expect(context.service.configureInject).toHaveBeenCalledWith("check", { enabled: false });
+  });
+
   it("emits one machine-readable status envelope", async () => {
     const context = fixture();
 

@@ -49,6 +49,31 @@ directory can be anywhere on the machine.
 Use `--mention` to require bot mentions in an allowed channel. Repeat `--channel` to allow more
 channels for the same bot. Use a separate Discord bot token for every additional agent.
 
+## Inject Turns from Local Processes
+
+Bots ignore messages from other bots, so a cron job, a local task hub, or another agent hands work
+to a running agent through its inject socket instead. Inject is off until you enable it per agent:
+
+```bash
+node dist/cli.js inject-config agent-one --log-channel LOG_CHANNEL_ID
+node dist/cli.js restart agent-one
+node dist/cli.js inject agent-one "Write the morning briefing" --from cron:morning
+```
+
+Each injected turn is first posted to the agent's channel with a marker saying it did not come from
+the user, then handled like a normal message: progress, the final answer as a reply, and a failure
+notice if it cannot run. One line goes to the log channel when one is configured. Pass `--channel`
+when the agent has more than one channel. `--mode interrupt` stops the active turn, but the injected
+turn still waits behind turns that were already queued.
+
+The socket lives at `<state root>/run/<instance id>.sock` with mode `0600`, so only the bridge's OS
+user can inject. It does not pass through the Discord access policy; Codex approval buttons still
+apply. The agent refuses more than 10 injected turns in 10 minutes, which is the hard limit on reply
+loops. It also refuses a repeat from the same sender within 60 seconds and requests past two
+agent-to-agent hops (`--hop`), but senders choose those values, so treat them as hints. A timed-out
+`inject` may still have been delivered; check the channel before retrying. Disable inject with
+`inject-config agent-one --disable` and a restart.
+
 ## Linux and EC2
 
 The Linux runtime uses `/proc/self/fd` for retained outbound file paths, stores Discord bot tokens

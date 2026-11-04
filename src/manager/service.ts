@@ -15,6 +15,9 @@ import type {
   WorkspaceProfile,
 } from "../domain/schemas.js";
 import { DiscordSnowflakeSchema, NameSchema } from "../domain/schemas.js";
+import { type InjectConfigFile, injectConfigPath, writeInjectConfig } from "../inject/config.js";
+import type { InjectResponse } from "../inject/service.js";
+import { injectSocketPath, sendInjectRequest } from "../inject/socket.js";
 import { createDefaultCredentialStore } from "../secrets/platform.js";
 import { accessPolicyRevision, RegistryStore } from "../storage/registry.js";
 import { DEFAULT_SUPERVISOR_PATH, TmuxController } from "./tmux.js";
@@ -60,6 +63,34 @@ export interface RegisterBotInput {
   readonly name: string;
   readonly ownerUserId: string;
   readonly token: string;
+}
+
+export interface InjectInput {
+  readonly text: string;
+  readonly from: string;
+  readonly mode: "queue" | "interrupt";
+  readonly hop: number;
+  readonly channelId?: string;
+}
+
+const INJECT_ERROR_CODES: Record<string, BridgeError["code"]> = {
+  INVALID_REQUEST: "INVALID_ARGUMENT",
+  CHANNEL_REQUIRED: "INVALID_ARGUMENT",
+  CHANNEL_NOT_ALLOWED: "INVALID_ARGUMENT",
+  RATE_LIMITED: "CONFLICT",
+  UNAVAILABLE: "CONFLICT",
+};
+
+function injectFailure(response: unknown): BridgeError {
+  const record =
+    typeof response === "object" && response !== null ? (response as Record<string, unknown>) : {};
+  const code = typeof record.code === "string" ? record.code : "INTERNAL";
+  const message = typeof record.message === "string" ? record.message : "Inject request failed.";
+  const reason = typeof record.reason === "string" ? ` (${record.reason})` : "";
+  return new BridgeError(
+    Object.hasOwn(INJECT_ERROR_CODES, code) ? (INJECT_ERROR_CODES[code] ?? "RUNTIME") : "RUNTIME",
+    `${message}${reason}`,
+  );
 }
 
 export interface CreateAgentInput {
@@ -469,6 +500,33 @@ export class ManagerService {
       ...binding,
       tmuxRunning: await this.options.tmux.hasSession(binding.tmuxSession),
     };
+  }
+
+  async inject(
+    target: string,
+    input: InjectInput,
+  ): Promise<{ agent: string; channelId: string; messageId: string }> {
+    const binding = await this.resolveBinding(target);
+    const response = await sendInjectRequest(injectSocketPath(this.options.paths, binding.id), {
+      version: 1,
+      ...input,
+    });
+    const accepted = response as InjectResponse;
+    if (typeof response !== "object" || response === null || accepted.ok !== true) {
+      throw injectFailure(response);
+    }
+    return { agent: binding.name, channelId: accepted.channelId, messageId: accepted.messageId };
+  }
+
+  async configureInject(
+    target: string,
+    config: InjectConfigFile,
+  ): Promise<{ agent: string; enabled: boolean; restartRequired: true }> {
+    const binding = await this.resolveBinding(target);
+    const directory = this.options.paths.instanceDirectory(binding.id);
+    await mkdir(directory, { mode: 0o700, recursive: true });
+    await writeInjectConfig(injectConfigPath(directory), config);
+    return { agent: binding.name, enabled: config.enabled, restartRequired: true };
   }
 
   async requestProgressReconciliation(

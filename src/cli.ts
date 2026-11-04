@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { password } from "@inquirer/prompts";
-import { Command, CommanderError, Option } from "commander";
+import { Command, CommanderError, InvalidArgumentError, Option } from "commander";
 import { resolveStatePaths } from "./config/paths.js";
 import { BridgeError, exitCodeFor } from "./domain/errors.js";
 import type { WorkspaceProfile } from "./domain/schemas.js";
@@ -63,6 +63,13 @@ function humanResult(envelope: CommandEnvelope): string {
     }\n`;
   }
   return `${JSON.stringify(envelope.data, null, 2)}\n`;
+}
+
+function parseHop(value: string): number {
+  if (!/^\d+$/.test(value)) {
+    throw new InvalidArgumentError("Hop must be a non-negative integer.");
+  }
+  return Number(value);
 }
 
 function collect(value: string, previous: string[]): string[] {
@@ -291,6 +298,53 @@ export async function runCli(
     .argument("[target]")
     .action(action("status", (target?: string) => service.status(target)));
   program.command("restore").action(action("restore", async () => service.restoreRunningAgents()));
+  program
+    .command("inject")
+    .description("Hand a turn to a running agent from cron, the hub, or another agent")
+    .argument("<target>")
+    .argument("<text>")
+    .requiredOption("--from <sender>", "who is sending, e.g. cron:morning or hub:task-12")
+    .addOption(new Option("--mode <mode>").choices(["queue", "interrupt"]).default("queue"))
+    .option("--hop <count>", "agent-to-agent hops so far", parseHop, 0)
+    .option("--channel <channel-id>", "required when the agent has several channels")
+    .action(
+      action(
+        "inject",
+        (
+          target: string,
+          text: string,
+          options: { from: string; mode: "queue" | "interrupt"; hop: number; channel?: string },
+        ) =>
+          service.inject(target, {
+            text,
+            from: options.from,
+            mode: options.mode,
+            hop: options.hop,
+            ...(options.channel === undefined ? {} : { channelId: options.channel }),
+          }),
+      ),
+    );
+  program
+    .command("inject-config")
+    .description("Enable or disable inject for an agent (takes effect on restart)")
+    .argument("<target>")
+    .option("--log-channel <channel-id>", "channel that gets one line per injected turn")
+    .option("--disable")
+    .action(
+      action(
+        "inject-config",
+        (target: string, options: { logChannel?: string; disable?: boolean }) =>
+          service.configureInject(
+            target,
+            options.disable === true
+              ? { enabled: false }
+              : {
+                  enabled: true,
+                  ...(options.logChannel === undefined ? {} : { logChannelId: options.logChannel }),
+                },
+          ),
+      ),
+    );
 
   const systemd = program.command("systemd");
   systemd

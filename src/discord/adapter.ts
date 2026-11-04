@@ -160,7 +160,10 @@ export interface DiscordGatewayTransport {
   login(token: string): Promise<void>;
   destroy(): Promise<void>;
   sendTyping(channelId: string): Promise<void>;
-  sendMessage(channelId: string, payload: DiscordMessagePayload): Promise<{ id: string }>;
+  sendMessage(
+    channelId: string,
+    payload: DiscordMessagePayload,
+  ): Promise<{ id: string; guildId?: string }>;
   sendFile(channelId: string, payload: DiscordFilePayload): Promise<{ id: string }>;
   sendDirectMessage(userId: string, payload: DiscordMessagePayload): Promise<{ id: string }>;
   createProgressThread(
@@ -176,6 +179,30 @@ export interface DiscordGatewayTransport {
   setProgressThreadState(threadId: string, state: DiscordProgressThreadState): Promise<void>;
   inspectThread(threadId: string): Promise<DiscordThreadInspection>;
   inspectProgressCapabilities(channelId: string): Promise<DiscordProgressCapabilities>;
+}
+
+export interface DiscordInjectedTurn {
+  readonly channelId: string;
+  readonly authorId: string;
+  readonly text: string;
+  beforeEnqueue?(): Promise<void>;
+}
+
+// Thrown when an injected turn was posted to Discord but could not be queued. The post
+// is visible, so callers must not treat the attempt as if it never happened.
+export class InjectedTurnRejectedError extends BridgeError {
+  constructor(
+    readonly messageId: string,
+    cause: unknown,
+  ) {
+    super("CONFLICT", "The injected turn was posted but not accepted.", undefined, { cause });
+    this.name = "InjectedTurnRejectedError";
+  }
+}
+
+export interface DiscordInjectedReceipt {
+  readonly messageId: string;
+  readonly guildId?: string;
 }
 
 export interface DiscordAdapterRegistry {
@@ -716,6 +743,102 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
     }
   }
 
+  // Turns handed in through the inject socket. Mirrors handleMessage: the turn is posted
+  // first so the human sees it, progress observation starts from that post, and failures
+  // are answered in the channel. The whole delivery, including the queued turn, counts as
+  // an active handler so stop() waits for it before destroying the transport.
+  async injectTurn(input: DiscordInjectedTurn): Promise<DiscordInjectedReceipt> {
+    if (!this.started || this.quiescing) {
+      throw new BridgeError("CONFLICT", "Discord adapter is not accepting turns.");
+    }
+    let settle!: () => void;
+    const lifetime = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    this.activeMessageHandlers.add(lifetime);
+    void lifetime.finally(() => this.activeMessageHandlers.delete(lifetime));
+    try {
+      const { receipt, completion } = await this.deliverInjectedTurn(input);
+      void completion.finally(settle);
+      return receipt;
+    } catch (error) {
+      settle();
+      throw error;
+    }
+  }
+
+  private async deliverInjectedTurn(
+    input: DiscordInjectedTurn,
+  ): Promise<{ receipt: DiscordInjectedReceipt; completion: Promise<void> }> {
+    const posted = await this.options.transport.sendMessage(input.channelId, {
+      content: input.text,
+    });
+    const source: DiscordObservationSource = Object.freeze({
+      channelId: input.channelId,
+      ...(posted.guildId === undefined ? {} : { guildId: posted.guildId }),
+      location: posted.guildId === undefined ? ("dm" as const) : ("guild" as const),
+      messageId: posted.id,
+    });
+    const replyFailure = () =>
+      this.options.transport
+        .sendMessage(input.channelId, {
+          content: "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+          replyToMessageId: posted.id,
+        })
+        .catch((error) => this.reportError(error));
+
+    let progressStarted = false;
+    try {
+      const observation = await this.observation.begin(source);
+      progressStarted = !observation.reused;
+      if (progressStarted) {
+        await this.observation.preparing(source).catch((error) => this.reportError(error));
+      }
+    } catch (error) {
+      this.reportError(error);
+    }
+
+    let completion: Promise<void>;
+    try {
+      await input.beforeEnqueue?.();
+      if (this.quiescing) throw new BridgeError("CONFLICT", "Discord adapter is stopping.");
+      if (progressStarted) {
+        await this.observation.queued(source).catch((error) => this.reportError(error));
+      }
+      completion = this.options.runtime.enqueue({
+        channelId: input.channelId,
+        messageId: posted.id,
+        authorId: input.authorId,
+        ...(posted.guildId === undefined ? {} : { guildId: posted.guildId }),
+        text: input.text,
+      });
+    } catch (error) {
+      this.reportError(error);
+      if (progressStarted) {
+        await this.observation
+          .terminal(source, {
+            message: "Injected turn was not accepted.",
+            status: "failed",
+            type: "terminal",
+          })
+          .catch((terminalError) => this.reportError(terminalError));
+      }
+      await replyFailure();
+      throw new InjectedTurnRejectedError(posted.id, error);
+    }
+
+    return {
+      receipt: Object.freeze({
+        messageId: posted.id,
+        ...(posted.guildId === undefined ? {} : { guildId: posted.guildId }),
+      }),
+      completion: completion.catch(async (error) => {
+        this.reportError(error);
+        await replyFailure();
+      }),
+    };
+  }
+
   async handleCommand(event: DiscordCommandEvent): Promise<void> {
     try {
       const { bot, policy } = await this.snapshot();
@@ -1242,7 +1365,10 @@ export class DiscordJsGatewayTransport implements DiscordGatewayTransport {
     await channel.sendTyping();
   }
 
-  async sendMessage(channelId: string, payload: DiscordMessagePayload): Promise<{ id: string }> {
+  async sendMessage(
+    channelId: string,
+    payload: DiscordMessagePayload,
+  ): Promise<{ id: string; guildId?: string }> {
     try {
       const channel = await this.client.channels.fetch(channelId);
       if (channel === null || !channel.isSendable()) {
@@ -1258,6 +1384,9 @@ export class DiscordJsGatewayTransport implements DiscordGatewayTransport {
       });
       return {
         id: acceptedDiscordId(sent.id, "Discord returned an invalid message receipt."),
+        ...(typeof sent.guildId === "string"
+          ? { guildId: acceptedDiscordId(sent.guildId, "Discord returned an invalid guild ID.") }
+          : {}),
       };
     } catch (error) {
       throw boundedDiscordError(error, {

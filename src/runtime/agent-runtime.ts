@@ -308,8 +308,12 @@ export class AgentRuntime {
     });
   }
 
+  get acceptingTurns(): boolean {
+    return this.state === "running" && !this.deliveryPaused && this.pendingControls === 0;
+  }
+
   enqueue(input: TurnInput): Promise<void> {
-    if (this.state !== "running" || this.deliveryPaused || this.pendingControls > 0) {
+    if (!this.acceptingTurns) {
       throw new BridgeError("CONFLICT", "Agent runtime is not accepting turns.");
     }
     return this.queue.enqueue(input);

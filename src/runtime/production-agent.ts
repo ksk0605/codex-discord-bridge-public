@@ -32,6 +32,14 @@ import {
 } from "../discord/progress-journal.js";
 import { BridgeError } from "../domain/errors.js";
 import type { AgentBinding, RegistryDocument } from "../domain/schemas.js";
+import { injectConfigPath, loadInjectConfig } from "../inject/config.js";
+import { InjectGuard } from "../inject/guard.js";
+import { InjectService } from "../inject/service.js";
+import {
+  type InjectSocketServer,
+  injectSocketPath,
+  startInjectSocketServer,
+} from "../inject/socket.js";
 import { createDefaultManagerService, type ManagerService } from "../manager/service.js";
 import { WorkspaceNormalizer } from "../manager/workspaces.js";
 import {
@@ -508,9 +516,38 @@ export async function createProductionAgentComponent(
     onError: reportError,
   });
 
+  const injectConfig = await loadInjectConfig(
+    injectConfigPath(context.paths.instanceDirectory(context.binding.id)),
+  );
+  const inject =
+    injectConfig === undefined
+      ? undefined
+      : new InjectService({
+          botName: context.bot.name,
+          guard: new InjectGuard(),
+          snapshot: async () => {
+            const document = await registry.read();
+            const bot = ownValue(document.bots, context.bot.name, "Bot");
+            const policy = ownValue(document.access, context.bot.name, "Access policy");
+            return { botUserId: bot.botUserId, channelIds: Object.keys(policy.groups) };
+          },
+          agent: {
+            acceptingTurns: () => runtime.acceptingTurns,
+            injectTurn: (turn) => adapter.injectTurn(turn),
+            interrupt: () => runtime.interrupt(),
+          },
+          log: transport,
+          config: injectConfig,
+          onError: reportError,
+        });
+  let injectServer: InjectSocketServer | undefined;
+
   let stopPromise: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     stopPromise ??= (async () => {
+      // Stop accepting inject connections now; in-flight requests finish while the rest
+      // shuts down, so inject never makes stop slower.
+      const injectClosing = injectServer?.close().catch(reportError);
       approval.cancelAll();
       adapter.quiesce();
       let primary: unknown;
@@ -529,6 +566,7 @@ export async function createProductionAgentComponent(
       } catch (error) {
         if (primary === undefined) primary = error;
       }
+      await injectClosing;
       if (primary !== undefined) throw primary;
     })();
     return stopPromise;
@@ -538,6 +576,13 @@ export async function createProductionAgentComponent(
       try {
         await runtime.start();
         await adapter.start(context.token);
+        if (inject !== undefined) {
+          injectServer = await startInjectSocketServer({
+            socketPath: injectSocketPath(context.paths, context.binding.id),
+            handle: (request) => inject.handle(request),
+            onError: reportError,
+          });
+        }
       } catch (error) {
         await stop().catch(() => undefined);
         throw error;
