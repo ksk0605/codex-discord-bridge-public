@@ -918,6 +918,28 @@ describe("DiscordGatewayAdapter", () => {
     ]);
   });
 
+  it("announces a final answer as plain chunked messages in another channel", async () => {
+    const context = fixture(document(policy({ textChunkLimit: 5, replyToMode: "all" })));
+    const ANNOUNCE = "200000000000000009";
+
+    await context.adapter.announce(ANNOUNCE, "abcdefghij");
+
+    expect(context.transport.sent).toEqual([
+      { channelId: ANNOUNCE, content: "abcde" },
+      { channelId: ANNOUNCE, content: "fghij" },
+    ]);
+  });
+
+  it("stops announcing once the turn's delivery is aborted", async () => {
+    const context = fixture(document(policy({ textChunkLimit: 5 })));
+    const controller = new AbortController();
+    controller.abort();
+
+    await context.adapter.announce("200000000000000009", "abcdefghij", controller.signal);
+
+    expect(context.transport.sent).toEqual([]);
+  });
+
   it("delivers prose and rendered table messages in order with one initial reply", async () => {
     const context = fixture(document(policy({ textChunkLimit: 80, replyToMode: "first" })));
     const input = [

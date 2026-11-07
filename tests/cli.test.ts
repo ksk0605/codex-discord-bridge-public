@@ -149,6 +149,28 @@ describe("codex-discord CLI", () => {
     });
   });
 
+  it("passes announce channels to inject-config and inject", async () => {
+    const context = fixture();
+
+    await runCli(
+      ["inject-config", "check", "--announce-channel", "400000000000000030", "400000000000000031"],
+      { service: context.service, streams: context.streams },
+    );
+    await runCli(
+      ["inject", "check", "brief", "--from", "cron:morning", "--announce", "400000000000000030"],
+      { service: context.service, streams: context.streams },
+    );
+
+    expect(context.service.configureInject).toHaveBeenCalledWith("check", {
+      enabled: true,
+      announceChannelIds: ["400000000000000030", "400000000000000031"],
+    });
+    expect(context.service.inject).toHaveBeenCalledWith(
+      "check",
+      expect.objectContaining({ announceChannelId: "400000000000000030" }),
+    );
+  });
+
   it("disables inject", async () => {
     const context = fixture();
 

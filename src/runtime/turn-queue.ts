@@ -8,6 +8,8 @@ export interface TurnInput {
   guildId?: string;
   parentChannelId?: string;
   interactionId?: string;
+  // Also post the final answer to this channel (set only by inject, after its allowlist check).
+  announceChannelId?: string;
   text: string;
   attachments?: LocalDiscordAttachment[];
 }
@@ -194,7 +196,7 @@ function snapshotInput(input: TurnInput): TurnItem {
   if (typeof input.text !== "string") {
     throw new BridgeError("INVALID_ARGUMENT", "turn text must be a string");
   }
-  for (const key of ["guildId", "parentChannelId", "interactionId"] as const) {
+  for (const key of ["guildId", "parentChannelId", "interactionId", "announceChannelId"] as const) {
     if (input[key] !== undefined && (typeof input[key] !== "string" || input[key].length === 0)) {
       throw new BridgeError("INVALID_ARGUMENT", `turn ${key} must be a non-empty string`);
     }

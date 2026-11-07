@@ -15,7 +15,12 @@ import type {
   WorkspaceProfile,
 } from "../domain/schemas.js";
 import { DiscordSnowflakeSchema, NameSchema } from "../domain/schemas.js";
-import { type InjectConfigFile, injectConfigPath, writeInjectConfig } from "../inject/config.js";
+import {
+  type InjectConfigFile,
+  injectConfigPath,
+  readInjectConfigFile,
+  writeInjectConfig,
+} from "../inject/config.js";
 import type { InjectResponse } from "../inject/service.js";
 import { injectSocketPath, sendInjectRequest } from "../inject/socket.js";
 import { createDefaultCredentialStore } from "../secrets/platform.js";
@@ -71,12 +76,14 @@ export interface InjectInput {
   readonly mode: "queue" | "interrupt";
   readonly hop: number;
   readonly channelId?: string;
+  readonly announceChannelId?: string;
 }
 
 const INJECT_ERROR_CODES: Record<string, BridgeError["code"]> = {
   INVALID_REQUEST: "INVALID_ARGUMENT",
   CHANNEL_REQUIRED: "INVALID_ARGUMENT",
   CHANNEL_NOT_ALLOWED: "INVALID_ARGUMENT",
+  ANNOUNCE_NOT_ALLOWED: "INVALID_ARGUMENT",
   RATE_LIMITED: "CONFLICT",
   UNAVAILABLE: "CONFLICT",
 };
@@ -525,7 +532,10 @@ export class ManagerService {
     const binding = await this.resolveBinding(target);
     const directory = this.options.paths.instanceDirectory(binding.id);
     await mkdir(directory, { mode: 0o700, recursive: true });
-    await writeInjectConfig(injectConfigPath(directory), config);
+    const path = injectConfigPath(directory);
+    // Settings not given this time keep their stored values, so changing one never drops another.
+    const existing = await readInjectConfigFile(path);
+    await writeInjectConfig(path, { ...existing, ...config });
     return { agent: binding.name, enabled: config.enabled, restartRequired: true };
   }
 

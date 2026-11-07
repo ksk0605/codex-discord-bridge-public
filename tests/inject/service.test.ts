@@ -170,6 +170,47 @@ describe("InjectService", () => {
     expect(denied).toMatchObject({ ok: false, code: "CHANNEL_NOT_ALLOWED" });
   });
 
+  it("passes an allowed announce channel to the agent and names it in the log line", async () => {
+    const ANNOUNCE = "100000000000000040";
+    const context = fixture({
+      config: { logChannelId: LOG_CHANNEL, announceChannelIds: [ANNOUNCE] },
+    });
+
+    const response = await context.service.handle(request({ announceChannelId: ANNOUNCE }));
+
+    expect(response).toMatchObject({ ok: true, channelId: CHANNEL });
+    expect(context.turns[0]?.announceChannelId).toBe(ANNOUNCE);
+    expect(context.sendMessage.mock.calls[0]?.[1]?.content).toContain(`결과 → <#${ANNOUNCE}>`);
+  });
+
+  it("refuses an announce channel that is not allowed, before posting anything", async () => {
+    const context = fixture({ config: { announceChannelIds: ["100000000000000040"] } });
+
+    const response = await context.service.handle(
+      request({ announceChannelId: "100000000000000041" }),
+    );
+
+    expect(response).toMatchObject({ ok: false, code: "ANNOUNCE_NOT_ALLOWED" });
+    expect(context.injectTurn).not.toHaveBeenCalled();
+  });
+
+  it("refuses announcing when no announce channels are configured", async () => {
+    const context = fixture();
+
+    expect(
+      await context.service.handle(request({ announceChannelId: "100000000000000040" })),
+    ).toMatchObject({ ok: false, code: "ANNOUNCE_NOT_ALLOWED" });
+  });
+
+  it("ignores an announce channel that is the turn's own channel", async () => {
+    const context = fixture();
+
+    const response = await context.service.handle(request({ announceChannelId: CHANNEL }));
+
+    expect(response).toMatchObject({ ok: true });
+    expect(context.turns[0]).not.toHaveProperty("announceChannelId");
+  });
+
   it("requires a channel when the bot is bound to several", async () => {
     const context = fixture({
       snapshot: async () => ({ botUserId: BOT_USER, channelIds: [CHANNEL, OTHER_CHANNEL] }),

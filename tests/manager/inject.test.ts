@@ -138,4 +138,28 @@ describe("ManagerService inject", () => {
       logChannelId: "400000000000000020",
     });
   });
+
+  it("keeps stored settings that a later inject-config call does not mention", async () => {
+    await service.configureInject("check", { enabled: true, logChannelId: "400000000000000020" });
+    await service.configureInject("check", {
+      enabled: true,
+      announceChannelIds: ["400000000000000030"],
+    });
+
+    const written = JSON.parse(
+      await readFile(injectConfigPath(paths.instanceDirectory(INSTANCE)), "utf8"),
+    );
+    expect(written).toEqual({
+      version: 1,
+      enabled: true,
+      logChannelId: "400000000000000020",
+      announceChannelIds: ["400000000000000030"],
+    });
+  });
+
+  it("explains a bad channel ID instead of dumping a schema error", async () => {
+    await expect(
+      service.configureInject("check", { enabled: true, announceChannelIds: ["abc"] }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
 });

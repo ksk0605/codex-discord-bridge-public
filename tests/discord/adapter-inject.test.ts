@@ -84,6 +84,22 @@ describe("DiscordGatewayAdapter.injectTurn", () => {
     });
   });
 
+  it("carries the announce channel into the queued turn", async () => {
+    const context = fixture();
+    await context.adapter.start("token");
+
+    await context.adapter.injectTurn({ ...turn, announceChannelId: "200000000000000009" });
+
+    expect(context.enqueue).toHaveBeenCalledWith({
+      channelId: CHANNEL,
+      messageId: POSTED,
+      authorId: BOT_USER,
+      guildId: GUILD,
+      announceChannelId: "200000000000000009",
+      text: turn.text,
+    });
+  });
+
   it("runs beforeEnqueue between posting and enqueuing", async () => {
     const context = fixture();
     await context.adapter.start("token");

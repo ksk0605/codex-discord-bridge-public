@@ -130,6 +130,8 @@ export interface AgentRuntimeOutput {
     dispatch?: AgentRuntimeDeliveryDispatch,
   ): Promise<DiscordDeliveryReceipt>;
   report?(channelId: string, messageId: string, text: string): Promise<void>;
+  // Posts a turn's final answer, as plain messages, to the channel named by announceChannelId.
+  announce?(channelId: string, text: string, signal: AbortSignal): Promise<void>;
   reportOrphanThread?(threadId: string): Promise<void>;
 }
 
@@ -1134,11 +1136,48 @@ export class AgentRuntime {
             );
           }
         }
+        const announceChannelId = current.item.announceChannelId;
+        if (
+          announceChannelId !== undefined &&
+          current.outcome === "completed" &&
+          parsed.visibleText.trim().length > 0 &&
+          !current.finalDeliveryController.signal.aborted
+        ) {
+          await this.announce(
+            current.item,
+            announceChannelId,
+            parsed.visibleText,
+            current.finalDeliveryController.signal,
+          );
+        }
       }
     } catch (error) {
       if (!current.finalDeliveryController.signal.aborted) throw error;
     } finally {
       await this.closeFinalFiles(current);
+    }
+  }
+
+  // The answer already reached the turn's own channel, so a failed copy is only reported there.
+  // Awaited before the turn settles, so the next queued turn waits for the copy as well.
+  private async announce(
+    item: TurnItem,
+    channelId: string,
+    text: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      const announce = this.ports.output.announce;
+      if (announce === undefined) {
+        throw new BridgeError("RUNTIME", "Discord announce delivery is unavailable.");
+      }
+      await announce.call(this.ports.output, channelId, text, signal);
+    } catch {
+      // A stop or interrupt cut the copy short on purpose; there is nothing to report.
+      if (signal.aborted) return;
+      await this.ports.output
+        .report?.(item.channelId, item.messageId, `결과를 <#${channelId}> 에 올리지 못했습니다.`)
+        .catch(() => undefined);
     }
   }
 

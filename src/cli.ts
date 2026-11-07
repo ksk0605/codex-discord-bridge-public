@@ -307,13 +307,23 @@ export async function runCli(
     .addOption(new Option("--mode <mode>").choices(["queue", "interrupt"]).default("queue"))
     .option("--hop <count>", "agent-to-agent hops so far", parseHop, 0)
     .option("--channel <channel-id>", "required when the agent has several channels")
+    .option(
+      "--announce <channel-id>",
+      "also post the final answer to this channel (must be allowed with inject-config)",
+    )
     .action(
       action(
         "inject",
         (
           target: string,
           text: string,
-          options: { from: string; mode: "queue" | "interrupt"; hop: number; channel?: string },
+          options: {
+            from: string;
+            mode: "queue" | "interrupt";
+            hop: number;
+            channel?: string;
+            announce?: string;
+          },
         ) =>
           service.inject(target, {
             text,
@@ -321,6 +331,7 @@ export async function runCli(
             mode: options.mode,
             hop: options.hop,
             ...(options.channel === undefined ? {} : { channelId: options.channel }),
+            ...(options.announce === undefined ? {} : { announceChannelId: options.announce }),
           }),
       ),
     );
@@ -329,11 +340,18 @@ export async function runCli(
     .description("Enable or disable inject for an agent (takes effect on restart)")
     .argument("<target>")
     .option("--log-channel <channel-id>", "channel that gets one line per injected turn")
+    .option(
+      "--announce-channel <channel-id...>",
+      "channels that injected turns may also post their final answer to",
+    )
     .option("--disable")
     .action(
       action(
         "inject-config",
-        (target: string, options: { logChannel?: string; disable?: boolean }) =>
+        (
+          target: string,
+          options: { logChannel?: string; announceChannel?: string[]; disable?: boolean },
+        ) =>
           service.configureInject(
             target,
             options.disable === true
@@ -341,6 +359,9 @@ export async function runCli(
               : {
                   enabled: true,
                   ...(options.logChannel === undefined ? {} : { logChannelId: options.logChannel }),
+                  ...(options.announceChannel === undefined
+                    ? {}
+                    : { announceChannelIds: options.announceChannel }),
                 },
           ),
       ),

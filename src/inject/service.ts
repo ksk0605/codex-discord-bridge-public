@@ -20,6 +20,7 @@ export const InjectRequestSchema = z
     mode: z.enum(["queue", "interrupt"]).default("queue"),
     hop: z.number().int().nonnegative().default(0),
     channelId: DiscordSnowflakeSchema.optional(),
+    announceChannelId: DiscordSnowflakeSchema.optional(),
   })
   .strict();
 
@@ -30,6 +31,7 @@ export type InjectErrorCode =
   | "RATE_LIMITED"
   | "CHANNEL_REQUIRED"
   | "CHANNEL_NOT_ALLOWED"
+  | "ANNOUNCE_NOT_ALLOWED"
   | "UNAVAILABLE"
   | "INTERNAL";
 
@@ -44,6 +46,8 @@ export type InjectResponse =
 
 export interface InjectConfig {
   readonly logChannelId?: string;
+  // Channels an injected turn may also post its final answer to (--announce).
+  readonly announceChannelIds?: readonly string[];
 }
 
 export interface InjectServiceOptions {
@@ -105,6 +109,8 @@ export class InjectService {
     const snapshot = await this.options.snapshot();
     const channelId = this.resolveChannel(request, snapshot.channelIds);
     if (typeof channelId !== "string") return channelId;
+    const announceChannelId = this.resolveAnnounce(request, channelId);
+    if (typeof announceChannelId === "object") return announceChannelId;
     if (!this.options.agent.acceptingTurns()) {
       return failure("UNAVAILABLE", "The agent is not accepting turns.");
     }
@@ -120,6 +126,7 @@ export class InjectService {
         channelId,
         authorId: snapshot.botUserId,
         text: formatInjectedText(request),
+        ...(announceChannelId === undefined ? {} : { announceChannelId }),
         ...(request.mode === "interrupt"
           ? { beforeEnqueue: () => this.options.agent.interrupt() }
           : {}),
@@ -131,7 +138,7 @@ export class InjectService {
       return failure("UNAVAILABLE", "The agent did not accept the turn.");
     }
 
-    await this.writeLog(request, channelId, receipt);
+    await this.writeLog(request, channelId, receipt, announceChannelId);
     return { ok: true, channelId, messageId: receipt.messageId };
   }
 
@@ -151,10 +158,23 @@ export class InjectService {
     return only;
   }
 
+  // The final answer already lands in the turn's channel, so announcing there again is skipped.
+  private resolveAnnounce(
+    request: InjectRequest,
+    channelId: string,
+  ): string | undefined | InjectResponse {
+    const target = request.announceChannelId;
+    if (target === undefined || target === channelId) return undefined;
+    return (this.options.config?.announceChannelIds ?? []).includes(target)
+      ? target
+      : failure("ANNOUNCE_NOT_ALLOWED", "That announce channel is not allowed for this agent.");
+  }
+
   private async writeLog(
     request: InjectRequest,
     channelId: string,
     receipt: DiscordInjectedReceipt,
+    announceChannelId: string | undefined,
   ): Promise<void> {
     const logChannelId = this.options.config?.logChannelId;
     if (logChannelId === undefined) return;
@@ -163,7 +183,8 @@ export class InjectService {
         ? `<#${channelId}>`
         : `https://discord.com/channels/${receipt.guildId}/${channelId}/${receipt.messageId}`;
     const mode = request.mode === "interrupt" ? "끼어들기" : "대기열";
-    const content = `${request.from} → ${this.options.botName} (${mode}): ${preview(request.text)}\n${link}`;
+    const announce = announceChannelId === undefined ? "" : ` · 결과 → <#${announceChannelId}>`;
+    const content = `${request.from} → ${this.options.botName} (${mode}${announce}): ${preview(request.text)}\n${link}`;
     try {
       await this.options.log.sendMessage(logChannelId, { content });
     } catch (error) {

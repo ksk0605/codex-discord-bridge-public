@@ -185,6 +185,8 @@ export interface DiscordInjectedTurn {
   readonly channelId: string;
   readonly authorId: string;
   readonly text: string;
+  // Also post the final answer here. The inject service checks it against its allowlist.
+  readonly announceChannelId?: string;
   beforeEnqueue?(): Promise<void>;
 }
 
@@ -810,6 +812,9 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
         messageId: posted.id,
         authorId: input.authorId,
         ...(posted.guildId === undefined ? {} : { guildId: posted.guildId }),
+        ...(input.announceChannelId === undefined
+          ? {}
+          : { announceChannelId: input.announceChannelId }),
         text: input.text,
       });
     } catch (error) {
@@ -985,6 +990,18 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
       receipts.push(await (dispatch === undefined ? operation({}) : dispatch(operation)));
     }
     return Object.freeze(receipts);
+  }
+
+  async announce(channelId: string, text: string, signal?: AbortSignal): Promise<void> {
+    const { policy } = await this.snapshot();
+    const chunks = chunkDiscordMarkdown(text, {
+      limit: Math.min(policy.textChunkLimit, 2_000),
+      mode: policy.chunkMode,
+    });
+    for (const content of chunks) {
+      if (signal?.aborted === true) return;
+      await this.options.transport.sendMessage(channelId, { content });
+    }
   }
 
   async report(channelId: string, messageId: string, text: string): Promise<void> {

@@ -447,6 +447,140 @@ describe("AgentRuntime", () => {
     expect(delivered).not.toContain("Inspection");
   });
 
+  describe("announce", () => {
+    const ANNOUNCE = "200000000000000099";
+
+    function finishWith(session: FakeSession, text: string): void {
+      session.emit({
+        method: "item/started",
+        threadId: binding.threadId,
+        turnId: "turn-1",
+        itemId: "final-1",
+        kind: "agentMessage",
+        phase: "final_answer",
+      });
+      session.emit({
+        method: "item/completed",
+        threadId: binding.threadId,
+        turnId: "turn-1",
+        itemId: "final-1",
+        kind: "agentMessage",
+        phase: "final_answer",
+        text,
+      });
+      session.emit({ method: "turn/completed", threadId: binding.threadId, turnId: "turn-1" });
+    }
+
+    it("copies the final answer to the announce channel after the normal reply", async () => {
+      const session = new FakeSession();
+      const calls: string[] = [];
+      const output = {
+        sendText: vi.fn(async () => {
+          calls.push("reply");
+          return [testReceipt()];
+        }),
+        announce: vi.fn(async (_channelId: string, _text: string, _signal: AbortSignal) => {
+          calls.push("announce");
+        }),
+      } satisfies AgentRuntimeOutput;
+      const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+      await runtime.start();
+
+      const turn = runtime.enqueue({ ...input, announceChannelId: ANNOUNCE });
+      await vi.waitFor(() => expect(session.starts).toHaveLength(1));
+      finishWith(session, "☀️ 아침 브리핑");
+      await turn;
+
+      expect(output.announce).toHaveBeenCalledWith(
+        ANNOUNCE,
+        "☀️ 아침 브리핑",
+        expect.any(AbortSignal),
+      );
+      expect(calls).toEqual(["reply", "announce"]);
+    });
+
+    it("does not announce turns that did not ask for it", async () => {
+      const session = new FakeSession();
+      const output = {
+        sendText: vi.fn(async () => [testReceipt()]),
+        announce: vi.fn(async () => undefined),
+      } satisfies AgentRuntimeOutput;
+      const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+      await runtime.start();
+
+      const turn = runtime.enqueue(input);
+      await vi.waitFor(() => expect(session.starts).toHaveLength(1));
+      finishWith(session, "Final answer.");
+      await turn;
+
+      expect(output.announce).not.toHaveBeenCalled();
+    });
+
+    it("does not announce when the normal reply failed", async () => {
+      const session = new FakeSession();
+      const output = {
+        sendText: vi.fn(async (): Promise<readonly DiscordDeliveryReceipt[]> => {
+          throw new Error("Discord down");
+        }),
+        announce: vi.fn(async () => undefined),
+      } satisfies AgentRuntimeOutput;
+      const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+      await runtime.start();
+
+      const turn = runtime.enqueue({ ...input, announceChannelId: ANNOUNCE });
+      await vi.waitFor(() => expect(session.starts).toHaveLength(1));
+      finishWith(session, "Final answer.");
+      await turn.catch(() => undefined);
+
+      expect(output.announce).not.toHaveBeenCalled();
+    });
+
+    it("reports when the output cannot announce at all", async () => {
+      const session = new FakeSession();
+      const output = {
+        sendText: vi.fn(async () => [testReceipt()]),
+        report: vi.fn(async (_channelId: string, _messageId: string, _text: string) => undefined),
+      } satisfies AgentRuntimeOutput;
+      const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+      await runtime.start();
+
+      const turn = runtime.enqueue({ ...input, announceChannelId: ANNOUNCE });
+      await vi.waitFor(() => expect(session.starts).toHaveLength(1));
+      finishWith(session, "Final answer.");
+      await turn;
+
+      expect(output.report).toHaveBeenCalledWith(
+        input.channelId,
+        input.messageId,
+        expect.stringContaining(ANNOUNCE),
+      );
+    });
+
+    it("reports a failed announce in the turn's own channel without failing the turn", async () => {
+      const session = new FakeSession();
+      const output = {
+        sendText: vi.fn(async () => [testReceipt()]),
+        announce: vi.fn(async () => {
+          throw new Error("Missing Access");
+        }),
+        report: vi.fn(async (_channelId: string, _messageId: string, _text: string) => undefined),
+      } satisfies AgentRuntimeOutput;
+      const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+      await runtime.start();
+
+      const turn = runtime.enqueue({ ...input, announceChannelId: ANNOUNCE });
+      await vi.waitFor(() => expect(session.starts).toHaveLength(1));
+      finishWith(session, "Final answer.");
+      await expect(turn).resolves.toBeUndefined();
+
+      expect(output.report).toHaveBeenCalledWith(
+        input.channelId,
+        input.messageId,
+        `결과를 <#${ANNOUNCE}> 에 올리지 못했습니다.`,
+      );
+    });
+  });
+
   it("buffers start-time notifications and drains them after the authoritative turn ID", async () => {
     const session = new FakeSession();
     const start = deferred<{ turnId: string }>();

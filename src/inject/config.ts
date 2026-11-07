@@ -12,6 +12,7 @@ const InjectConfigFileSchema = z
     version: z.literal(1),
     enabled: z.boolean(),
     logChannelId: DiscordSnowflakeSchema.optional(),
+    announceChannelIds: z.array(DiscordSnowflakeSchema).max(20).optional(),
   })
   .strict();
 
@@ -21,7 +22,8 @@ export function injectConfigPath(instanceDirectory: string): string {
   return join(instanceDirectory, "inject.json");
 }
 
-export async function loadInjectConfig(path: string): Promise<InjectConfig | undefined> {
+// Returns the file as written (enabled or not), or undefined when there is none.
+export async function readInjectConfigFile(path: string): Promise<InjectConfigFile | undefined> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -31,9 +33,9 @@ export async function loadInjectConfig(path: string): Promise<InjectConfig | und
       cause: error,
     });
   }
-  let parsed: z.infer<typeof InjectConfigFileSchema>;
   try {
-    parsed = InjectConfigFileSchema.parse(JSON.parse(text));
+    const { version: _version, ...config } = InjectConfigFileSchema.parse(JSON.parse(text));
+    return config;
   } catch (error) {
     throw new BridgeError(
       "CONFIGURATION",
@@ -42,12 +44,28 @@ export async function loadInjectConfig(path: string): Promise<InjectConfig | und
       { cause: error },
     );
   }
-  if (!parsed.enabled) return undefined;
-  return parsed.logChannelId === undefined ? {} : { logChannelId: parsed.logChannelId };
+}
+
+export async function loadInjectConfig(path: string): Promise<InjectConfig | undefined> {
+  const parsed = await readInjectConfigFile(path);
+  if (parsed === undefined || !parsed.enabled) return undefined;
+  return {
+    ...(parsed.logChannelId === undefined ? {} : { logChannelId: parsed.logChannelId }),
+    ...(parsed.announceChannelIds === undefined || parsed.announceChannelIds.length === 0
+      ? {}
+      : { announceChannelIds: [...new Set(parsed.announceChannelIds)] }),
+  };
 }
 
 export async function writeInjectConfig(path: string, config: InjectConfigFile): Promise<void> {
-  const document = InjectConfigFileSchema.parse({ version: 1, ...config });
+  const checked = InjectConfigFileSchema.safeParse({ version: 1, ...config });
+  if (!checked.success) {
+    throw new BridgeError(
+      "INVALID_ARGUMENT",
+      "Inject config needs Discord channel IDs (17-20 digits), at most 20 announce channels.",
+    );
+  }
+  const document = checked.data;
   const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, {
     encoding: "utf8",

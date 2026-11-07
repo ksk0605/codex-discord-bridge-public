@@ -47,6 +47,20 @@ describe("inject config", () => {
     expect(await loadInjectConfig(path)).toEqual({});
   });
 
+  it("loads announce channels without duplicates", async () => {
+    const path = join(directory, "inject.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        announceChannelIds: ["100000000000000040", "100000000000000040"],
+      }),
+    );
+
+    expect(await loadInjectConfig(path)).toEqual({ announceChannelIds: ["100000000000000040"] });
+  });
+
   it("rejects a malformed file instead of silently disabling inject", async () => {
     const path = join(directory, "inject.json");
     await writeFile(path, JSON.stringify({ version: 1, enabled: true, logChannelId: "abc" }));

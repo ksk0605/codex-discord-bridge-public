@@ -66,6 +66,26 @@ notice if it cannot run. One line goes to the log channel when one is configured
 when the agent has more than one channel. `--mode interrupt` stops the active turn, but the injected
 turn still waits behind turns that were already queued.
 
+To show the result somewhere else, such as a morning briefing in the channel you read first, allow
+that channel and pass `--announce`:
+
+```bash
+node dist/cli.js inject-config agent-one --log-channel LOG_CHANNEL_ID --announce-channel MAIN_CHANNEL_ID
+node dist/cli.js restart agent-one
+node dist/cli.js inject agent-one "Write the morning briefing" --from cron:morning --announce MAIN_CHANNEL_ID
+```
+
+The turn still runs in the agent's own channel. When it completes, its final answer is also posted
+to the announce channel as plain messages (no reply, no mentions, no files). An interrupted or failed turn is not
+announced, and a failed announce is reported in the agent's channel. Requests for a channel that is
+not allowed are refused before anything is posted. The bot needs permission to send messages in the
+announce channel.
+
+`inject-config` keeps stored settings you do not pass, so adding announce channels later keeps the
+log channel; `--announce-channel` replaces the whole announce list. A running agent only learns new
+settings or request fields on restart: rebuild, run `inject-config`, and restart the agent before a
+caller starts sending `--announce`, or the request is refused and the turn never runs.
+
 The socket lives at `<state root>/run/<instance id>.sock` with mode `0600`, so only the bridge's OS
 user can inject. It does not pass through the Discord access policy; Codex approval buttons still
 apply. The agent refuses more than 10 injected turns in 10 minutes, which is the hard limit on reply
