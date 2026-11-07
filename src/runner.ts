@@ -311,20 +311,18 @@ export function parseRunnerArguments(arguments_: readonly string[]): string {
 }
 
 export async function runAgentRunner(runner: AgentRunner): Promise<number> {
-  await runner.start();
-  let signalResolved = false;
+  // Listen for stop signals from before startup until shutdown has finished. In tmux,
+  // Ctrl-C arrives twice (from the terminal and forwarded by the supervisor), and an
+  // unhandled second SIGINT would kill the runner so the supervisor restarts it.
   let resolveSignal!: () => void;
   const signal = new Promise<void>((resolve) => {
     resolveSignal = resolve;
   });
-  const onSignal = () => {
-    if (signalResolved) return;
-    signalResolved = true;
-    resolveSignal();
-  };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  const onSignal = () => resolveSignal();
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   try {
+    await runner.start();
     const requested = runner.waitForShutdownRequest();
     const winner = await Promise.race([
       requested.then((restart) => ({ restart })),

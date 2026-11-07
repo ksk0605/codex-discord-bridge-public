@@ -8,7 +8,7 @@ import type {
   BotCredentialMetadata,
   WorkspaceProfile,
 } from "../src/domain/schemas.js";
-import { AgentRunner, RUNNER_RESTART_EXIT_CODE } from "../src/runner.js";
+import { AgentRunner, RUNNER_RESTART_EXIT_CODE, runAgentRunner } from "../src/runner.js";
 
 const INSTANCE = "00000000-0000-4000-8000-000000000001";
 const temporary: string[] = [];
@@ -139,6 +139,64 @@ describe("AgentRunner", () => {
     ).rejects.toThrow();
     await expect(access(join(paths.instanceDirectory(INSTANCE), "runner.lock"))).rejects.toThrow();
     expect(context.registry.markState).toHaveBeenLastCalledWith("stopped");
+  });
+
+  // In tmux, Ctrl-C reaches the runner twice: once from the terminal (the whole foreground
+  // process group gets SIGINT) and once forwarded by the supervisor. A signal with no
+  // listener kills Node, the supervisor sees a crash, and restarts the agent.
+  it("keeps handling stop signals until shutdown finishes", async () => {
+    const paths = await statePaths();
+    const context = dependencies(paths);
+    const baseline = process.listenerCount("SIGINT");
+    let finishStop!: () => void;
+    let listenersDuringStop = { interrupt: 0, terminate: 0 };
+    context.component.stop.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          listenersDuringStop = {
+            interrupt: process.listenerCount("SIGINT"),
+            terminate: process.listenerCount("SIGTERM"),
+          };
+          finishStop = () => resolve(undefined);
+        }),
+    );
+
+    const running = runAgentRunner(context.runner);
+    await vi.waitFor(() => expect(context.component.start).toHaveBeenCalled());
+    await vi.waitFor(() => expect(process.listenerCount("SIGINT")).toBeGreaterThan(baseline));
+    process.emit("SIGINT");
+    await vi.waitFor(() => expect(context.component.stop).toHaveBeenCalled());
+
+    expect(listenersDuringStop.interrupt).toBeGreaterThan(baseline);
+    expect(listenersDuringStop.terminate).toBeGreaterThan(0);
+    process.emit("SIGINT");
+    finishStop();
+    expect(await running).toBe(0);
+    expect(context.component.stop).toHaveBeenCalledOnce();
+    expect(process.listenerCount("SIGINT")).toBe(baseline);
+  });
+
+  it("shuts down cleanly when a stop signal arrives during startup", async () => {
+    const paths = await statePaths();
+    const context = dependencies(paths);
+    const baseline = process.listenerCount("SIGINT");
+    let finishStart!: () => void;
+    context.component.start.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          finishStart = () => resolve(undefined);
+        }),
+    );
+
+    const running = runAgentRunner(context.runner);
+    await vi.waitFor(() => expect(context.component.start).toHaveBeenCalled());
+    expect(process.listenerCount("SIGINT")).toBeGreaterThan(baseline);
+    process.emit("SIGINT");
+    finishStart();
+
+    expect(await running).toBe(0);
+    expect(context.component.stop).toHaveBeenCalledOnce();
+    expect(process.listenerCount("SIGINT")).toBe(baseline);
   });
 
   it("returns the dedicated supervisor restart exit code", async () => {
