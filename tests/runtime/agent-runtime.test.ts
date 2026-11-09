@@ -495,8 +495,122 @@ describe("AgentRuntime", () => {
         ANNOUNCE,
         "☀️ 아침 브리핑",
         expect.any(AbortSignal),
+        [],
       );
       expect(calls).toEqual(["reply", "announce"]);
+    });
+
+    function announceOutput() {
+      return {
+        sendText: vi.fn(async () => [testReceipt()]),
+        sendFile: vi.fn(
+          async (
+            _channelId: string,
+            _messageId: string,
+            _file: AuthorizedOutboundFile,
+            _message?: string,
+            _signal?: AbortSignal,
+          ) => testReceipt(),
+        ),
+        announce: vi.fn(
+          async (
+            _channelId: string,
+            _text: string,
+            _signal: AbortSignal,
+            _files?: readonly AuthorizedOutboundFile[],
+          ) => undefined,
+        ),
+        report: vi.fn(async (_channelId: string, _messageId: string, _text: string) => undefined),
+      } satisfies AgentRuntimeOutput;
+    }
+
+    it("copies marker files to the announce channel and closes them afterwards", async () => {
+      const session = new FakeSession();
+      const marker = outboundFile("/repo/weather.png");
+      session.parseFileMarkers.mockResolvedValue({ visibleText: "☀️ 브리핑", files: [marker] });
+      const output = announceOutput();
+      const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+      await runtime.start();
+
+      const turn = runtime.enqueue({ ...input, announceChannelId: ANNOUNCE });
+      await vi.waitFor(() => expect(session.starts).toHaveLength(1));
+      finishWith(session, "☀️ 브리핑");
+      await turn;
+
+      expect(output.sendFile).toHaveBeenCalledOnce();
+      expect(output.announce).toHaveBeenCalledWith(ANNOUNCE, "☀️ 브리핑", expect.any(AbortSignal), [
+        marker,
+      ]);
+      expect(marker.close).toHaveBeenCalledOnce();
+    });
+
+    it("authorizes files the file tool already uploaded again for the announce copy", async () => {
+      const session = new FakeSession();
+      const uploaded = outboundFile("/repo/weather.png");
+      const again = outboundFile("/repo/weather.png");
+      session.authorizeSendFile
+        .mockResolvedValueOnce({ file: uploaded })
+        .mockResolvedValueOnce({ file: again });
+      const output = announceOutput();
+      const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+      await runtime.start();
+
+      const turn = runtime.enqueue({ ...input, announceChannelId: ANNOUNCE });
+      await vi.waitFor(() => expect(session.starts).toHaveLength(1));
+      await Promise.resolve();
+      await expect(
+        session.requestSendFile({
+          arguments: { path: uploaded.canonicalPath },
+          callId: "call-one",
+          threadId: binding.threadId,
+          turnId: "turn-1",
+        }),
+      ).resolves.toMatchObject({ success: true });
+      finishWith(session, "☀️ 브리핑");
+      await turn;
+
+      expect(session.authorizeSendFile).toHaveBeenLastCalledWith(binding.threadId, {
+        path: "/repo/weather.png",
+      });
+      expect(output.announce).toHaveBeenCalledWith(ANNOUNCE, "☀️ 브리핑", expect.any(AbortSignal), [
+        again,
+      ]);
+      expect(again.close).toHaveBeenCalledOnce();
+    });
+
+    it("still announces the text and reports files it could not authorize again", async () => {
+      const session = new FakeSession();
+      const uploaded = outboundFile("/repo/gone.png");
+      session.authorizeSendFile
+        .mockResolvedValueOnce({ file: uploaded })
+        .mockRejectedValueOnce(new Error("file is gone"));
+      const output = announceOutput();
+      const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+      await runtime.start();
+
+      const turn = runtime.enqueue({ ...input, announceChannelId: ANNOUNCE });
+      await vi.waitFor(() => expect(session.starts).toHaveLength(1));
+      await Promise.resolve();
+      await session.requestSendFile({
+        arguments: { path: uploaded.canonicalPath },
+        callId: "call-one",
+        threadId: binding.threadId,
+        turnId: "turn-1",
+      });
+      finishWith(session, "☀️ 브리핑");
+      await turn;
+
+      expect(output.announce).toHaveBeenCalledWith(
+        ANNOUNCE,
+        "☀️ 브리핑",
+        expect.any(AbortSignal),
+        [],
+      );
+      expect(output.report).toHaveBeenCalledWith(
+        input.channelId,
+        input.messageId,
+        `첨부 1개를 <#${ANNOUNCE}> 에 올리지 못했습니다.`,
+      );
     });
 
     it("does not announce turns that did not ask for it", async () => {

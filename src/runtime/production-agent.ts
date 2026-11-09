@@ -484,7 +484,8 @@ export async function createProductionAgentComponent(
       sendFile: (channelId, messageId, file, message, signal, dispatch) =>
         adapter.sendFile(channelId, messageId, file, message, signal, dispatch),
       report: (channelId, messageId, text) => adapter.report(channelId, messageId, text),
-      announce: (channelId, text, signal) => adapter.announce(channelId, text, signal),
+      announce: (channelId, text, signal, files) =>
+        adapter.announce(channelId, text, signal, files),
       reportOrphanThread: async (threadId) => {
         process.stderr.write(`Unbound Codex thread requires repair: ${threadId}\n`);
       },

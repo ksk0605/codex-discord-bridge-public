@@ -992,15 +992,28 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
     return Object.freeze(receipts);
   }
 
-  async announce(channelId: string, text: string, signal?: AbortSignal): Promise<void> {
+  // Posts the text as plain chunked messages, then each file as its own message.
+  async announce(
+    channelId: string,
+    text: string,
+    signal: AbortSignal = new AbortController().signal,
+    files: readonly AuthorizedOutboundFile[] = [],
+  ): Promise<void> {
     const { policy } = await this.snapshot();
-    const chunks = chunkDiscordMarkdown(text, {
-      limit: Math.min(policy.textChunkLimit, 2_000),
-      mode: policy.chunkMode,
-    });
+    const chunks =
+      text.trim().length === 0
+        ? []
+        : chunkDiscordMarkdown(text, {
+            limit: Math.min(policy.textChunkLimit, 2_000),
+            mode: policy.chunkMode,
+          });
     for (const content of chunks) {
-      if (signal?.aborted === true) return;
+      if (signal.aborted) return;
       await this.options.transport.sendMessage(channelId, { content });
+    }
+    for (const file of files) {
+      if (signal.aborted) return;
+      await this.options.transport.sendFile(channelId, { file, signal });
     }
   }
 

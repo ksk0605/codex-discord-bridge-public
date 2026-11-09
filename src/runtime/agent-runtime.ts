@@ -130,8 +130,14 @@ export interface AgentRuntimeOutput {
     dispatch?: AgentRuntimeDeliveryDispatch,
   ): Promise<DiscordDeliveryReceipt>;
   report?(channelId: string, messageId: string, text: string): Promise<void>;
-  // Posts a turn's final answer, as plain messages, to the channel named by announceChannelId.
-  announce?(channelId: string, text: string, signal: AbortSignal): Promise<void>;
+  // Posts a turn's final answer, as plain messages followed by its files, to the channel named
+  // by announceChannelId.
+  announce?(
+    channelId: string,
+    text: string,
+    signal: AbortSignal,
+    files?: readonly AuthorizedOutboundFile[],
+  ): Promise<void>;
   reportOrphanThread?(threadId: string): Promise<void>;
 }
 
@@ -1140,13 +1146,15 @@ export class AgentRuntime {
         if (
           announceChannelId !== undefined &&
           current.outcome === "completed" &&
-          parsed.visibleText.trim().length > 0 &&
+          (parsed.visibleText.trim().length > 0 || successfulPaths.size + markerFiles.length > 0) &&
           !current.finalDeliveryController.signal.aborted
         ) {
           await this.announce(
-            current.item,
+            current,
             announceChannelId,
             parsed.visibleText,
+            [...successfulPaths],
+            markerFiles,
             current.finalDeliveryController.signal,
           );
         }
@@ -1160,18 +1168,47 @@ export class AgentRuntime {
 
   // The answer already reached the turn's own channel, so a failed copy is only reported there.
   // Awaited before the turn settles, so the next queued turn waits for the copy as well.
+  // Files the dynamic tool already uploaded were closed after that upload, so they are
+  // authorized again by path; marker files are still open and are reused as they are.
   private async announce(
-    item: TurnItem,
+    current: TurnState,
     channelId: string,
     text: string,
+    uploadedPaths: readonly string[],
+    markerFiles: readonly AuthorizedOutboundFile[],
     signal: AbortSignal,
   ): Promise<void> {
+    const item = current.item;
     try {
       const announce = this.ports.output.announce;
       if (announce === undefined) {
         throw new BridgeError("RUNTIME", "Discord announce delivery is unavailable.");
       }
-      await announce.call(this.ports.output, channelId, text, signal);
+      const files: AuthorizedOutboundFile[] = [];
+      let skipped = 0;
+      for (const path of uploadedPaths) {
+        try {
+          if (this.session === undefined) throw new BridgeError("RUNTIME", "No active session.");
+          const { file } = await this.session.authorizeSendFile(this.binding?.threadId ?? "", {
+            path,
+          });
+          current.finalFiles.add(file);
+          files.push(file);
+        } catch {
+          skipped += 1;
+        }
+      }
+      files.push(...markerFiles);
+      await announce.call(this.ports.output, channelId, text, signal, files);
+      if (skipped > 0 && !signal.aborted) {
+        await this.ports.output
+          .report?.(
+            item.channelId,
+            item.messageId,
+            `첨부 ${skipped}개를 <#${channelId}> 에 올리지 못했습니다.`,
+          )
+          .catch(() => undefined);
+      }
     } catch {
       // A stop or interrupt cut the copy short on purpose; there is nothing to report.
       if (signal.aborted) return;

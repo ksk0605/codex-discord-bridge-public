@@ -930,6 +930,31 @@ describe("DiscordGatewayAdapter", () => {
     ]);
   });
 
+  it("announces the turn's files after its text, without replying", async () => {
+    const context = fixture(document(policy({ textChunkLimit: 5, replyToMode: "all" })));
+    const ANNOUNCE = "200000000000000009";
+    const file = authorizedFile();
+    const controller = new AbortController();
+
+    await context.adapter.announce(ANNOUNCE, "abcde", controller.signal, [file]);
+
+    expect(context.transport.sent).toEqual([{ channelId: ANNOUNCE, content: "abcde" }]);
+    expect(context.transport.files).toEqual([
+      { channelId: ANNOUNCE, file, signal: controller.signal },
+    ]);
+  });
+
+  it("announces files alone when the answer has no visible text", async () => {
+    const context = fixture(document(policy({ textChunkLimit: 5 })));
+    const ANNOUNCE = "200000000000000009";
+    const file = authorizedFile();
+
+    await context.adapter.announce(ANNOUNCE, "  ", new AbortController().signal, [file]);
+
+    expect(context.transport.sent).toEqual([]);
+    expect(context.transport.files).toHaveLength(1);
+  });
+
   it("stops announcing once the turn's delivery is aborted", async () => {
     const context = fixture(document(policy({ textChunkLimit: 5 })));
     const controller = new AbortController();
