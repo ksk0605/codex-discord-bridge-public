@@ -77,6 +77,7 @@ export interface InjectInput {
   readonly hop: number;
   readonly channelId?: string;
   readonly announceChannelId?: string;
+  readonly newThread?: boolean;
 }
 
 const INJECT_ERROR_CODES: Record<string, BridgeError["code"]> = {

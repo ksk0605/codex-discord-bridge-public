@@ -21,6 +21,8 @@ export const InjectRequestSchema = z
     hop: z.number().int().nonnegative().default(0),
     channelId: DiscordSnowflakeSchema.optional(),
     announceChannelId: DiscordSnowflakeSchema.optional(),
+    // Start the turn in a fresh Codex thread so earlier tasks do not carry over.
+    newThread: z.boolean().default(false),
   })
   .strict();
 
@@ -127,6 +129,7 @@ export class InjectService {
         authorId: snapshot.botUserId,
         text: formatInjectedText(request),
         ...(announceChannelId === undefined ? {} : { announceChannelId }),
+        ...(request.newThread ? { freshThread: true } : {}),
         ...(request.mode === "interrupt"
           ? { beforeEnqueue: () => this.options.agent.interrupt() }
           : {}),
@@ -184,7 +187,8 @@ export class InjectService {
         : `https://discord.com/channels/${receipt.guildId}/${channelId}/${receipt.messageId}`;
     const mode = request.mode === "interrupt" ? "끼어들기" : "대기열";
     const announce = announceChannelId === undefined ? "" : ` · 결과 → <#${announceChannelId}>`;
-    const content = `${request.from} → ${this.options.botName} (${mode}${announce}): ${preview(request.text)}\n${link}`;
+    const fresh = request.newThread ? " · 새 스레드" : "";
+    const content = `${request.from} → ${this.options.botName} (${mode}${fresh}${announce}): ${preview(request.text)}\n${link}`;
     try {
       await this.options.log.sendMessage(logChannelId, { content });
     } catch (error) {

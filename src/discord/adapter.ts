@@ -187,6 +187,8 @@ export interface DiscordInjectedTurn {
   readonly text: string;
   // Also post the final answer here. The inject service checks it against its allowlist.
   readonly announceChannelId?: string;
+  // Run the turn in a fresh Codex thread instead of the agent's ongoing one.
+  readonly freshThread?: boolean;
   beforeEnqueue?(): Promise<void>;
 }
 
@@ -815,6 +817,7 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
         ...(input.announceChannelId === undefined
           ? {}
           : { announceChannelId: input.announceChannelId }),
+        ...(input.freshThread === true ? { freshThread: true } : {}),
         text: input.text,
       });
     } catch (error) {

@@ -183,6 +183,18 @@ describe("InjectService", () => {
     expect(context.sendMessage.mock.calls[0]?.[1]?.content).toContain(`결과 → <#${ANNOUNCE}>`);
   });
 
+  it("asks for a fresh Codex thread only when the request says so, and logs it", async () => {
+    const context = fixture({ config: { logChannelId: LOG_CHANNEL } });
+
+    await context.service.handle(request({ newThread: true }));
+    await context.service.handle(request({ from: "hub:task-2" }));
+
+    expect(context.turns[0]?.freshThread).toBe(true);
+    expect(context.turns[1]?.freshThread).toBeUndefined();
+    expect(context.sendMessage.mock.calls[0]?.[1]?.content).toContain("새 스레드");
+    expect(context.sendMessage.mock.calls[1]?.[1]?.content).not.toContain("새 스레드");
+  });
+
   it("refuses an announce channel that is not allowed, before posting anything", async () => {
     const context = fixture({ config: { announceChannelIds: ["100000000000000040"] } });
 

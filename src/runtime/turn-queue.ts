@@ -10,6 +10,8 @@ export interface TurnInput {
   interactionId?: string;
   // Also post the final answer to this channel (set only by inject, after its allowlist check).
   announceChannelId?: string;
+  // Start this turn in a fresh Codex thread (set only by inject --new-thread).
+  freshThread?: boolean;
   text: string;
   attachments?: LocalDiscordAttachment[];
 }
@@ -200,6 +202,9 @@ function snapshotInput(input: TurnInput): TurnItem {
     if (input[key] !== undefined && (typeof input[key] !== "string" || input[key].length === 0)) {
       throw new BridgeError("INVALID_ARGUMENT", `turn ${key} must be a non-empty string`);
     }
+  }
+  if (input.freshThread !== undefined && typeof input.freshThread !== "boolean") {
+    throw new BridgeError("INVALID_ARGUMENT", "turn freshThread must be a boolean");
   }
   const attachments =
     input.attachments === undefined ? undefined : parseLocalDiscordAttachments(input.attachments);

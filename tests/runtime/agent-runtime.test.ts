@@ -2284,6 +2284,27 @@ describe("AgentRuntime", () => {
     );
   });
 
+  it("runs a fresh-thread turn in a new Codex thread and keeps using it", async () => {
+    const session = new FakeSession();
+    const output = { sendText: vi.fn(async () => [testReceipt()]) } satisfies AgentRuntimeOutput;
+    const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+    await runtime.start();
+
+    const fresh = runtime.enqueue({ ...input, freshThread: true });
+    await vi.waitFor(() => expect(session.starts).toHaveLength(1));
+    expect(session.starts[0]).toMatch(new RegExp(`^${session.nextThreadId}:`));
+    expect(session.creationKey).toMatch(/^[0-9a-f-]{36}$/);
+    session.emit({ method: "turn/completed", threadId: session.nextThreadId, turnId: "turn-1" });
+    await expect(fresh).resolves.toBeUndefined();
+
+    session.nextTurnId = "turn-2";
+    const next = runtime.enqueue({ ...input, messageId: "998" });
+    await vi.waitFor(() => expect(session.starts).toHaveLength(2));
+    expect(session.starts[1]).toMatch(new RegExp(`^${session.nextThreadId}:`));
+    session.emit({ method: "turn/completed", threadId: session.nextThreadId, turnId: "turn-2" });
+    await expect(next).resolves.toBeUndefined();
+  });
+
   it("keeps agent model settings when replacing the Codex thread", async () => {
     const session = new FakeSession();
     const output = { sendText: vi.fn(async () => [testReceipt()]) } satisfies AgentRuntimeOutput;

@@ -311,6 +311,7 @@ export async function runCli(
       "--announce <channel-id>",
       "also post the final answer to this channel (must be allowed with inject-config)",
     )
+    .option("--new-thread", "run the turn in a fresh Codex thread (no memory of earlier turns)")
     .action(
       action(
         "inject",
@@ -323,6 +324,7 @@ export async function runCli(
             hop: number;
             channel?: string;
             announce?: string;
+            newThread?: boolean;
           },
         ) =>
           service.inject(target, {
@@ -332,6 +334,7 @@ export async function runCli(
             hop: options.hop,
             ...(options.channel === undefined ? {} : { channelId: options.channel }),
             ...(options.announce === undefined ? {} : { announceChannelId: options.announce }),
+            ...(options.newThread === true ? { newThread: true } : {}),
           }),
       ),
     );

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ServerRequestResult } from "../app-server/protocol.js";
 import type {
   AuthorizedDiscordSendFileArguments,
@@ -637,6 +638,7 @@ export class AgentRuntime {
 
   private async runTurnActive(item: TurnItem): Promise<void> {
     if (this.deliveryPaused) throw new BridgeError("CONFLICT", "Agent runtime delivery is paused.");
+    if (item.freshThread === true) await this.replaceThreadForTurn();
     const progressSource = progressSourceFor(item);
     await this.forwardProgress(item, () => this.ports.progress?.running(progressSource));
     const binding = this.binding;
@@ -1354,6 +1356,39 @@ export class AgentRuntime {
         "Turn discarded by runtime lifecycle.",
       );
     }
+  }
+
+  // Moves the agent to a new Codex thread right before a turn that asked for one
+  // (inject --new-thread). The turn is already active, so no other turn can run in between.
+  private async replaceThreadForTurn(): Promise<void> {
+    const oldBinding = this.binding;
+    const session = this.session;
+    if (!oldBinding || !session)
+      throw new BridgeError("RUNTIME", "Agent runtime session is unavailable.");
+    const creator = session.start;
+    if (!creator) throw new BridgeError("RUNTIME", "The session does not support thread creation.");
+    const created = await creator.call(
+      session,
+      oldBinding.workspace,
+      oldBinding.inbox,
+      randomUUID(),
+    );
+    let replaced: AgentRuntimeBinding;
+    try {
+      replaced = await this.ports.registry.replaceThread(oldBinding.id, created.threadId);
+    } catch (error) {
+      await this.reportOrphan(created.threadId);
+      throw safeRuntimeError(error, "Fresh thread registration failed.");
+    }
+    this.binding = replaced;
+    try {
+      await session.resume(replaced.threadId, replaced.workspace, replaced.inbox);
+    } catch (error) {
+      // recover() restarts the app server on the binding, which already points at the new thread.
+      await this.recover(error);
+      return;
+    }
+    this.bindSession(session);
   }
 
   private async reportOrphan(threadId: string): Promise<void> {
