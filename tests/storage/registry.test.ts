@@ -831,14 +831,10 @@ describe("RegistryStore atomic persistence", () => {
       };
       expect(committed.workspaces).toHaveProperty("main-workspace");
 
-      const blocked = await captureError(
-        withTimeout(
-          new RegistryStore({ registryPath }).read(),
-          3_000,
-          "Immediate registry acquisition did not settle while the lock was retained",
-        ),
+      // Atomic snapshot reads remain available even if a prior writer's unlock failed.
+      expect((await new RegistryStore({ registryPath }).read()).workspaces).toHaveProperty(
+        "main-workspace",
       );
-      expect(blocked).toMatchObject({ code: "ELOCKED" });
     } finally {
       await withTimeout(
         (async () => {
@@ -2201,5 +2197,47 @@ describe("RegistryDocumentSchema", () => {
     };
 
     expect(RegistryDocumentSchema.safeParse(document).success).toBe(false);
+  });
+});
+
+describe("read snapshots under writer contention", () => {
+  it("lets 15 readers see the committed snapshot while a writer holds the lock", async () => {
+    const { registryPath, registry } = await createRegistry();
+    await registry.registerBot(bot());
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((r) => {
+      enter = r;
+    });
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const writer = new RegistryStore({
+      registryPath,
+      lockAdapter: async (_p, acquire) => {
+        const unlock = await acquire();
+        enter();
+        await held;
+        return unlock;
+      },
+    });
+    const writing = writer.addWorkspace(workspace());
+    await entered;
+    try {
+      const snapshots = await withTimeout(
+        Promise.all(Array.from({ length: 15 }, () => new RegistryStore({ registryPath }).read())),
+        200,
+        "readers waited on a writer",
+      );
+      expect(snapshots).toHaveLength(15);
+      for (const snapshot of snapshots) {
+        expect(snapshot.bots).toHaveProperty("bot-one");
+        expect(snapshot.workspaces).not.toHaveProperty("main-workspace");
+      }
+    } finally {
+      release();
+      await writing;
+    }
+    expect((await registry.read()).workspaces).toHaveProperty("main-workspace");
   });
 });

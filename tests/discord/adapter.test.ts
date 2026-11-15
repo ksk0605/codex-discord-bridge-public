@@ -6,6 +6,7 @@ import {
   type DiscordCommandEvent,
   DiscordGatewayAdapter,
   type DiscordGatewayTransport,
+  type DiscordIngressDiagnostic,
   DiscordJsGatewayTransport,
   type DiscordMessageEvent,
   type DiscordObservationIngress,
@@ -361,10 +362,12 @@ function fixture(
     terminal: vi.fn(async () => undefined),
     ...observationOverride,
   };
+  const diagnostics: DiscordIngressDiagnostic[] = [];
   const intervals: Array<() => void> = [];
   const cleared: unknown[] = [];
   const adapter = new DiscordGatewayAdapter({
     botName: "bot-one",
+    onIngress: (event) => diagnostics.push(event),
     transport,
     registry,
     runtime,
@@ -394,6 +397,7 @@ function fixture(
     attachmentStore,
     observation,
     turns,
+    diagnostics,
     intervals,
     cleared,
     setDocument: (next: RegistryDocument) => {
@@ -561,7 +565,7 @@ describe("DiscordGatewayAdapter", () => {
     context.setDocument(document(policy({ dmPolicy: "disabled", allowFrom: [OWNER] })));
     await context.adapter.handleMessage(message({ id: "400000000000000002" }));
     expect(context.runtime.enqueue).toHaveBeenCalledOnce();
-    expect(context.registry.read).toHaveBeenCalledTimes(3);
+    expect(context.registry.read).toHaveBeenCalledTimes(2);
   });
 
   it("orders authorization, progress rejection, observation, attachments, enqueue, and completion", async () => {
@@ -1703,5 +1707,61 @@ describe("DiscordJsGatewayTransport", () => {
         threadOwnerId: BOT,
       }),
     );
+  });
+});
+
+describe("ingress contention recovery", () => {
+  it("retries a pre-access ELOCKED without losing or duplicating the request", async () => {
+    const c = fixture();
+    c.registry.read.mockRejectedValueOnce(Object.assign(new Error("held"), { code: "ELOCKED" }));
+    await c.adapter.handleMessage(message());
+    expect(c.turns).toHaveLength(1);
+    expect(c.turns[0]?.messageId).toBe(MESSAGE);
+  });
+  it("skips bot and system messages before acquiring a registry snapshot", async () => {
+    const c = fixture();
+    await c.adapter.handleMessage(message({ authorIsBot: true }));
+    await c.adapter.handleMessage(message({ authorIsSystem: true }));
+    expect(c.registry.read).not.toHaveBeenCalled();
+    expect(c.turns).toHaveLength(0);
+  });
+  it("deduplicates concurrent and repeated gateway deliveries of the same message", async () => {
+    const c = fixture();
+    await c.adapter.start("test-token");
+    try {
+      await Promise.all([
+        c.transport.messageHandler?.(message()),
+        c.transport.messageHandler?.(message()),
+      ]);
+      await c.transport.messageHandler?.(message());
+      expect(c.turns).toHaveLength(1);
+    } finally {
+      await c.adapter.stop();
+    }
+  });
+});
+
+describe("ingress diagnostic boundaries", () => {
+  it("records permanent pre-access failure without authorizing or replying to an unknown sender", async () => {
+    const c = fixture();
+    c.registry.read.mockRejectedValue(Object.assign(new Error("held"), { code: "ELOCKED" }));
+    await c.adapter.handleMessage(message());
+    expect(c.diagnostics).toContainEqual({
+      phase: "failed",
+      messageId: MESSAGE,
+      channelId: DM,
+      stage: "access",
+      errorCode: "ELOCKED",
+    });
+    expect(c.turns).toHaveLength(0);
+    expect(c.transport.sent).toHaveLength(0);
+  });
+  it("does not retry an error after enqueue could have performed work", async () => {
+    const c = fixture();
+    c.runtime.enqueue.mockRejectedValue(Object.assign(new Error("held"), { code: "ELOCKED" }));
+    await c.adapter.handleMessage(message());
+    expect(c.runtime.enqueue).toHaveBeenCalledTimes(1);
+    expect(c.diagnostics.filter((d) => d.phase === "retry")).toHaveLength(0);
+    expect(c.transport.sent).toHaveLength(1);
   });
 });

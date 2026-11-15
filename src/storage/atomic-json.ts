@@ -21,11 +21,11 @@ const LOCK_TARGET_OPEN_FLAGS =
   (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0);
 
 const LOCK_RETRY_OPTIONS = {
-  retries: 8,
+  retries: 12,
   factor: 1.5,
   minTimeout: 25,
-  maxTimeout: 250,
-  randomize: false,
+  maxTimeout: 500,
+  randomize: true,
 } as const;
 
 export type AtomicWriteFaultPoint =
@@ -153,6 +153,13 @@ export class AtomicJsonStore<T> {
   }
 
   async read(): Promise<T> {
+    await mkdir(dirname(this.filePath), { mode: DIRECTORY_MODE, recursive: true });
+    await chmod(dirname(this.filePath), DIRECTORY_MODE);
+    // Writers publish complete validated snapshots by atomic rename. An open reader
+    // sees either the previous or next complete inode, so existing files need no lock.
+    const snapshot = await this.#readCurrent();
+    if (snapshot !== undefined) return snapshot;
+    // Only first-use initialization mutates state: serialize it and recheck existence.
     return this.#withLock(async (markCommitted) => {
       const current = await this.#readCurrent();
       if (current === undefined) {

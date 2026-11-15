@@ -276,7 +276,25 @@ export interface DiscordGatewayAdapterOptions {
   readonly now?: () => number;
   readonly timers?: DiscordAdapterTimers;
   readonly typingIntervalMs?: number;
+  readonly onIngress?: (event: DiscordIngressDiagnostic) => void;
   readonly onError?: (error: unknown) => void;
+}
+
+export interface DiscordIngressDiagnostic {
+  readonly phase:
+    | "received"
+    | "ignored"
+    | "authorized"
+    | "retry"
+    | "enqueued"
+    | "completed"
+    | "failed"
+    | "duplicate";
+  readonly messageId: string;
+  readonly channelId: string;
+  readonly stage?: string;
+  readonly errorCode?: string;
+  readonly attempt?: number;
 }
 
 interface PendingApprovalButton {
@@ -537,6 +555,8 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
   private readonly activeMessageHandlers = new Set<Promise<void>>();
   private unsubscribe: Array<() => void> = [];
   private commitTail = Promise.resolve();
+  private readonly ingressInFlight = new Map<string, Promise<void>>();
+  private readonly ingressCompleted = new Map<string, number>();
   private attachmentStop: Promise<void> | undefined;
   private startPromise: Promise<void> | undefined;
   private stopPromise: Promise<void> | undefined;
@@ -626,12 +646,21 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
   }
 
   async handleMessage(event: DiscordMessageEvent, commit?: IngressCommit): Promise<void> {
+    this.recordIngress(event, "received");
+    // These messages are unconditionally rejected by access policy. Avoid a shared
+    // registry read for every other bot's message in every subscribed guild.
+    if (event.authorIsBot || event.authorIsSystem) {
+      this.recordIngress(event, "ignored");
+      await commit?.skip();
+      return;
+    }
+    let stage = "access";
     let sourceAllowed = false;
     let progressStarted = false;
     let handedOff = false;
     let progressSource: DiscordObservationSource | undefined;
     try {
-      const { bot, policy } = await this.snapshot();
+      const { bot, policy } = await this.messageSnapshot(event);
       const decision = evaluateDiscordAccess({
         bot,
         policy,
@@ -644,7 +673,10 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
           ? {}
           : { createPairingCode: this.options.createPairingCode }),
       });
-      if (decision.action === "drop") return;
+      if (decision.action === "drop") {
+        this.recordIngress(event, "ignored", { stage: "access" });
+        return;
+      }
       if (decision.action === "pair") {
         await this.persistPairing(policy, event, decision.code, decision.expiresAt);
         await this.options.transport.sendMessage(event.channelId, {
@@ -655,6 +687,8 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
       }
 
       sourceAllowed = true;
+      this.recordIngress(event, "authorized");
+      stage = "prepare";
       if (event.content.length === 0 && event.attachments.length === 0) return;
       progressSource = observationSource(event);
       if (await this.observation.isProgressOnlyThread(progressSource)) {
@@ -671,7 +705,10 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
 
       try {
         const observation = await this.observation.begin(progressSource);
-        if (observation.reused) return;
+        if (observation.reused) {
+          this.recordIngress(event, "duplicate", { stage: "journal" });
+          return;
+        }
         progressStarted = true;
         await this.observation.preparing(progressSource).catch((error) => this.reportError(error));
       } catch (error) {
@@ -710,8 +747,11 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
           await this.observation.queued(progressSource).catch((error) => this.reportError(error));
         };
         const enqueueAccepted = () => {
+          stage = "enqueue";
           const completion = enqueue();
           handedOff = true;
+          this.recordIngress(event, "enqueued");
+          stage = "runtime";
           return completion;
         };
         if (commit === undefined) {
@@ -723,7 +763,9 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
       } finally {
         this.timers.clearInterval(typing);
       }
+      this.recordIngress(event, "completed");
     } catch (error) {
+      this.recordIngress(event, "failed", { stage, errorCode: this.errorCode(error) });
       this.reportError(error);
       if (progressStarted && !handedOff && progressSource !== undefined) {
         await this.observation
@@ -1089,18 +1131,85 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
 
   private dispatchMessage(event: DiscordMessageEvent): Promise<void> {
     if (this.quiescing) return Promise.resolve();
+    const key = `${event.channelId}:${event.id}`;
+    const active = this.ingressInFlight.get(key);
+    if (active !== undefined) {
+      this.recordIngress(event, "duplicate");
+      return active;
+    }
+    const completedAt = this.ingressCompleted.get(key);
+    if (completedAt !== undefined && this.now() - completedAt < 600_000) {
+      this.recordIngress(event, "duplicate");
+      return Promise.resolve();
+    }
     const previous = this.commitTail;
     let release!: () => void;
     this.commitTail = new Promise<void>((resolve) => {
       release = resolve;
     });
     const operation = this.handleMessage(event, new IngressCommit(previous, release));
+    this.ingressInFlight.set(key, operation);
     this.activeMessageHandlers.add(operation);
-    operation.then(
-      () => this.activeMessageHandlers.delete(operation),
-      () => this.activeMessageHandlers.delete(operation),
-    );
+    const cleanup = () => {
+      this.ingressInFlight.delete(key);
+      this.activeMessageHandlers.delete(operation);
+    };
+    operation.then(() => {
+      cleanup();
+      this.ingressCompleted.set(key, this.now());
+      while (this.ingressCompleted.size > 4096) {
+        const oldest = this.ingressCompleted.keys().next().value;
+        if (oldest === undefined) break;
+        this.ingressCompleted.delete(oldest);
+      }
+    }, cleanup);
     return operation;
+  }
+
+  private errorCode(error: unknown): string {
+    return typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+  }
+
+  private recordIngress(
+    event: DiscordMessageEvent,
+    phase: DiscordIngressDiagnostic["phase"],
+    extra: Partial<DiscordIngressDiagnostic> = {},
+  ): void {
+    try {
+      this.options.onIngress?.({
+        phase,
+        messageId: event.id,
+        channelId: event.channelId,
+        ...extra,
+      });
+    } catch {
+      /* Diagnostics must not change message handling. */
+    }
+  }
+
+  private async messageSnapshot(event: DiscordMessageEvent) {
+    // Retry only acquisition failures before any enqueue or Discord side effect.
+    // Never replay a potentially committed mutation or a running model turn.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.snapshot();
+      } catch (error) {
+        if (this.errorCode(error) !== "ELOCKED" || attempt >= 3) throw error;
+        this.recordIngress(event, "retry", {
+          stage: "access",
+          errorCode: "ELOCKED",
+          attempt: attempt + 1,
+        });
+        await new Promise((resolve) =>
+          setTimeout(resolve, 50 * 2 ** attempt + Math.floor(Math.random() * 50)),
+        );
+      }
+    }
   }
 
   private async persistAttachments(event: DiscordMessageEvent) {

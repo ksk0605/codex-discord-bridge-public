@@ -22,6 +22,7 @@ import {
   type DiscordAttachmentStorePort,
 } from "../discord/attachments.js";
 import { redactDiscordSecrets } from "../discord/format.js";
+import { createIngressLog } from "../discord/ingress-log.js";
 import {
   DiscordProgressController,
   type DiscordProgressControllerOptions,
@@ -516,6 +517,9 @@ export async function createProductionAgentComponent(
     observation: progress,
     attachmentStore,
     onError: reportError,
+    onIngress: createIngressLog(
+      join(context.paths.instanceDirectory(context.binding.id), "ingress.jsonl"),
+    ),
   });
 
   const injectConfig = await loadInjectConfig(
