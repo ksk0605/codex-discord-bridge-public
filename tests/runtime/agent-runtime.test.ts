@@ -420,6 +420,102 @@ describe("AgentRuntime", () => {
       await runtime.stop();
     }
   });
+  it("releases a completed turn even when binding its progress observation never settles", async () => {
+    const session = new FakeSession();
+    const progress = progressPort();
+    progress.bindTurn = vi.fn(() => new Promise<never>(() => {}));
+    const output = { sendText: vi.fn(async () => [testReceipt()]) };
+    const runtime = new AgentRuntime({ ...ports(session, output), progress });
+    await runtime.start();
+    vi.useFakeTimers();
+    try {
+      let finished = false;
+      const turn = runtime.enqueue(input).then(() => {
+        finished = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      session.emit({
+        method: "item/started",
+        threadId: binding.threadId,
+        turnId: "turn-1",
+        itemId: "answer",
+        kind: "agentMessage",
+      });
+      session.emit({
+        method: "item/completed",
+        threadId: binding.threadId,
+        turnId: "turn-1",
+        itemId: "answer",
+        kind: "agentMessage",
+        text: "answer",
+      });
+      session.emit({ method: "turn/completed", threadId: binding.threadId, turnId: "turn-1" });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(finished).toBe(true);
+      await turn;
+      expect(output.sendText).toHaveBeenCalledOnce();
+      expect(runtime.queue.depth()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      await runtime.stop();
+    }
+  });
+  it("reconciles against the recovered session instead of the disposed original session", async () => {
+    const old = Object.assign(new FakeSession(), {
+      terminalTurnStatus: vi.fn(async () => {
+        throw new Error("disposed");
+      }),
+    });
+    old.startTurnError = new Error("connection lost before start");
+    const current = Object.assign(new FakeSession(), {
+      terminalTurnStatus: vi.fn(async () => "completed" as const),
+    });
+    const p = ports(old, { sendText: vi.fn(async () => [testReceipt()]) });
+    let starts = 0;
+    p.appServer.start = async () => (++starts === 1 ? old : current);
+    const runtime = new AgentRuntime(p);
+    await runtime.start();
+    vi.useFakeTimers();
+    try {
+      const turn = runtime.enqueue(input);
+      await vi.advanceTimersByTimeAsync(31_000);
+      await turn;
+      expect(current.terminalTurnStatus).toHaveBeenCalled();
+      expect(old.terminalTurnStatus).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      await runtime.stop();
+    }
+  });
+  it("continues to the next queued turn when progress binding and error reporting both hang", async () => {
+    const session = new FakeSession();
+    const progress = progressPort();
+    progress.bindTurn = vi.fn(() => new Promise<never>(() => {}));
+    const output = {
+      sendText: vi.fn(async () => [testReceipt()]),
+      report: vi.fn(() => new Promise<never>(() => {})),
+    };
+    const runtime = new AgentRuntime({ ...ports(session, output), progress });
+    await runtime.start();
+    vi.useFakeTimers();
+    try {
+      const first = runtime.enqueue(input);
+      await vi.advanceTimersByTimeAsync(0);
+      session.nextTurnId = "turn-2";
+      const second = runtime.enqueue({ ...input, messageId: "457" });
+      session.emit({ method: "turn/completed", threadId: binding.threadId, turnId: "turn-1" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await first;
+      expect(session.startCalls).toBe(2);
+      session.emit({ method: "turn/completed", threadId: binding.threadId, turnId: "turn-2" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await second;
+      expect(runtime.queue.depth()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      await runtime.stop();
+    }
+  });
   it("marks a queued source running before turn/start resolves and binds only its returned turn", async () => {
     const session = new FakeSession();
     const start = deferred<{ turnId: string }>();

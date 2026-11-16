@@ -588,6 +588,18 @@ export class DiscordProgressController {
     });
   }
 
+  // Observability is optional; its transport must not hold the model queue.
+  async disable(source: { channelId: string; messageId: string }): Promise<void> {
+    const observation = this.active.get(source.messageId);
+    if (!observation || observation.source.channelId !== source.channelId) return;
+    observation.terminal = true;
+    this.clearHeartbeat(observation);
+    this.active.delete(source.messageId);
+    void observation.pump?.stop().catch((error) => this.report(error));
+    if (observation.journalOwned)
+      await this.journal.close(source.messageId, "failed", this.timestamp());
+  }
+
   async terminal(source: TurnProgressSource, terminal: TurnProgressTerminal): Promise<void> {
     const observation = this.observation(source);
     if (observation.terminal) return;

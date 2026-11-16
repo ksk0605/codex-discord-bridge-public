@@ -62,6 +62,7 @@ import {
 } from "./agent-runtime.js";
 import { ApprovalRouter } from "./approval-router.js";
 import { DeliveryLedger } from "./delivery-ledger.js";
+import { createRuntimeLog } from "./lifecycle-log.js";
 
 const APPROVAL_METHODS: readonly ApprovalRequestMethod[] = [
   "item/commandExecution/requestApproval",
@@ -486,6 +487,9 @@ export async function createProductionAgentComponent(
     registry: createRuntimeRegistryPort(registry, context.binding.id, inbox),
     appServer,
     output: {
+      diagnostic: createRuntimeLog(
+        join(context.paths.instanceDirectory(context.binding.id), "runtime-lifecycle.jsonl"),
+      ),
       sendText: (channelId, messageId, text, dispatch) =>
         adapter.sendText(channelId, messageId, text, dispatch),
       sendFile: (channelId, messageId, file, message, signal, dispatch) =>

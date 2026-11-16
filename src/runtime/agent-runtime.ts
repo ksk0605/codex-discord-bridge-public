@@ -121,6 +121,7 @@ export interface AgentRuntimeAppServer {
 }
 
 export interface AgentRuntimeOutput {
+  diagnostic?(event: { messageId: string; phase: string; turnId?: string }): void;
   sendText(
     channelId: string,
     messageId: string,
@@ -172,6 +173,7 @@ export interface AgentRuntimePorts {
 }
 
 export interface AgentRuntimeProgressPort extends TurnProgressPort {
+  disable?(source: { channelId: string; messageId: string }): Promise<void>;
   decorateFinalText?(source: TurnProgressSource, text: string): string;
   deliver?(
     source: TurnProgressSource,
@@ -298,6 +300,7 @@ export class AgentRuntime {
   private pendingStart: PendingStartBarrier | undefined;
   private turns = new Map<string, TurnState>();
   private readonly terminalItems = new WeakSet<TurnItem>();
+  private readonly degradedProgress = new WeakSet<object>();
   private deliveryPaused = false;
   private pendingControls = 0;
   state: AgentRuntimeState = "stopped";
@@ -628,7 +631,20 @@ export class AgentRuntime {
     });
   }
 
+  private diagnose(item: Pick<TurnItem, "messageId">, phase: string, turnId?: string): void {
+    try {
+      this.ports.output.diagnostic?.({
+        messageId: item.messageId,
+        phase,
+        ...(turnId === undefined ? {} : { turnId }),
+      });
+    } catch {
+      /* Observability must never block a turn. */
+    }
+  }
+
   private async runTurn(item: TurnItem): Promise<void> {
+    this.diagnose(item, "starting");
     try {
       if (item.deliveryId) await this.ports.deliveryLifecycle?.start(item.deliveryId);
       await this.runTurnActive(item);
@@ -717,6 +733,7 @@ export class AgentRuntime {
       }
     }
     const turnId = started.turnId;
+    this.diagnose(item, "started", turnId);
     validateTextId(turnId, "turn ID");
     this.assertPendingStart(barrier);
     this.active = { item, turnId, generation: barrier.generation };
@@ -740,28 +757,47 @@ export class AgentRuntime {
       state.reject = reject;
     });
     let checking = false;
+    let reconciliationFailures = 0;
     const reconciliation = setInterval(() => {
-      if (checking || state.settled || state.completionStarted || !session.terminalTurnStatus)
+      if (checking || state.settled || state.completionStarted || !turnSession.terminalTurnStatus)
         return;
       checking = true;
-      void session
-        .terminalTurnStatus(binding.threadId, turnId)
+      this.diagnose(item, "reconcile-start", turnId);
+      void turnSession
+        .terminalTurnStatus(turnBinding.threadId, turnId)
         .then((status) => {
-          if (!status || state.settled || state.completionStarted || this.session !== session)
+          this.diagnose(item, status ? "reconcile-terminal" : "reconcile-active", turnId);
+          if (!status || state.settled || state.completionStarted || this.session !== turnSession)
             return;
           state.completionStarted = true;
           if (status !== "completed")
             state.outcome = status === "interrupted" ? "interrupted" : "failed";
           void this.complete(state);
         })
-        .catch(() => undefined)
+        .catch(() => {
+          this.diagnose(item, "reconcile-failed", turnId);
+          reconciliationFailures += 1;
+          if (reconciliationFailures === 3)
+            void deadline(
+              Promise.resolve(
+                this.ports.output.report?.(
+                  item.channelId,
+                  item.messageId,
+                  "실행 상태 재확인에 연속 실패했습니다. 작업을 중복 실행하지 않고 관리자 확인이 필요합니다.",
+                ),
+              ),
+              1_000,
+            ).catch(() => undefined);
+        })
         .finally(() => {
           checking = false;
         });
     }, 30_000);
     reconciliation.unref();
     try {
+      this.diagnose(item, "binding-progress", turnId);
       await this.forwardProgress(item, () => this.ports.progress?.bindTurn(progressSource, turnId));
+      this.diagnose(item, "bound-progress", turnId);
       this.drainPendingStart(barrier, turnId);
       await completion;
     } finally {
@@ -1075,6 +1111,7 @@ export class AgentRuntime {
       item.completed = true;
       if (event.files) item.files.push(...event.files);
     } else if (event.method === "turn/completed") {
+      this.diagnose(current.item, "terminal-notification", event.turnId);
       if (current.completionStarted) return;
       current.completionStarted = true;
       this.lastTerminalGeneration = current.generation;
@@ -1085,7 +1122,8 @@ export class AgentRuntime {
 
   private emitProgress(current: TurnState, event: TurnProgressEvent): void {
     const source = progressSourceFor(current.item);
-    void this.forwardProgress(current.item, () => this.ports.progress?.event(source, event));
+    if (!this.degradedProgress.has(current.item))
+      void this.forwardProgress(current.item, () => this.ports.progress?.event(source, event));
   }
 
   private async forwardProgress(
@@ -1093,11 +1131,27 @@ export class AgentRuntime {
     operation: () => Promise<void> | undefined,
   ): Promise<void> {
     try {
-      await operation();
+      await deadline(Promise.resolve(operation()), 5_000);
     } catch {
-      await this.ports.output
-        .report?.(item.channelId, item.messageId, "Codex progress delivery failed.")
-        .catch(() => undefined);
+      if (this.degradedProgress.has(item)) return;
+      this.diagnose(item, "progress-disabled");
+      this.degradedProgress.add(item);
+      await deadline(
+        Promise.resolve(
+          this.ports.progress?.disable?.({ channelId: item.channelId, messageId: item.messageId }),
+        ),
+        1_000,
+      ).catch(() => undefined);
+      await deadline(
+        Promise.resolve(
+          this.ports.output.report?.(
+            item.channelId,
+            item.messageId,
+            "진행 기록 갱신에 실패했습니다. 작업은 계속 진행하며 자동 재실행하지 않습니다.",
+          ),
+        ),
+        1_000,
+      ).catch(() => undefined);
     }
   }
 
@@ -1125,10 +1179,12 @@ export class AgentRuntime {
         return;
       }
       const visibleText =
-        this.ports.progress?.decorateFinalText?.(
-          progressSourceFor(current.item),
-          parsed.visibleText,
-        ) ?? parsed.visibleText;
+        (!this.degradedProgress.has(current.item)
+          ? this.ports.progress?.decorateFinalText?.(
+              progressSourceFor(current.item),
+              parsed.visibleText,
+            )
+          : undefined) ?? parsed.visibleText;
       const successfulPaths = new Set(current.fileDelivery.successfulPaths());
       const markerFiles = uniqueCanonicalFiles(files).filter(
         (file) => !successfulPaths.has(file.canonicalPath),
@@ -1257,6 +1313,7 @@ export class AgentRuntime {
 
   private async complete(current: TurnState): Promise<void> {
     try {
+      this.diagnose(current.item, "delivering-final");
       await deadline(this.deliver(current), 120_000);
       await deadline(this.closeProgress(current), 15_000);
       this.settle(current);
@@ -1317,6 +1374,7 @@ export class AgentRuntime {
   }
 
   private finalDeliveryDispatch(item: TurnItem): AgentRuntimeDeliveryDispatch | undefined {
+    if (this.degradedProgress.has(item)) return undefined;
     const progress = this.ports.progress;
     const deliver = progress?.deliver;
     if (deliver === undefined) return undefined;
@@ -1474,6 +1532,7 @@ export class AgentRuntime {
   private settle(state: TurnState, error?: unknown): void {
     if (state.settled) return;
     state.settled = true;
+    this.diagnose(state.item, error === undefined ? "settled" : "settled-failed");
     if (error === undefined) state.resolve?.();
     else state.reject?.(error);
   }

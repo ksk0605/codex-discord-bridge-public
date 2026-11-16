@@ -533,6 +533,20 @@ describe("DiscordProgressController destination creation", () => {
 });
 
 describe("DiscordProgressController provenance and lifecycle", () => {
+  it("disables a stuck progress connection, stops its pump, and retires its active journal entry", async () => {
+    const pumps: ImmediatePump[] = [];
+    const progress = controller(transport(), { createPump: pumpFactory(pumps) });
+    const source = guildSource();
+    await progress.begin(source);
+    await progress.preparing(source);
+    await progress.queued(source);
+    await progress.bindTurn(source, TURN);
+    await progress.disable(source);
+    expect(pumps[0]?.stopped).toBe(true);
+    expect(await journal.listActive()).toEqual([]);
+    await progress.disable(source);
+  });
+
   it("requires durable provenance and verified bot ownership for progress-only ingress", async () => {
     const discord = transport();
     const progress = controller(discord, { createPump: pumpFactory([]) });
