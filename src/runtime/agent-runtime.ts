@@ -68,6 +68,10 @@ export interface AgentRuntimeSendFileRequest {
 export type AgentRuntimeSendFileResult = ServerRequestResult<"item/tool/call">;
 
 export interface AgentRuntimeSession {
+  terminalTurnStatus?(
+    threadId: string,
+    turnId: string,
+  ): Promise<"completed" | "failed" | "interrupted" | undefined>;
   listModels(): Promise<readonly CodexModelCatalogEntry[]>;
   resume(threadId: string, workspace: WorkspaceProfile, inbox: string): Promise<void>;
   startTurn(
@@ -157,6 +161,10 @@ export type AgentRuntimeDeliveryDispatch = (
 ) => Promise<DiscordDeliveryReceipt>;
 
 export interface AgentRuntimePorts {
+  readonly deliveryLifecycle?: {
+    start(id: string): Promise<void>;
+    finish(id: string): Promise<void>;
+  };
   readonly registry: AgentRuntimeRegistry;
   readonly appServer: AgentRuntimeAppServer;
   readonly output: AgentRuntimeOutput;
@@ -622,7 +630,9 @@ export class AgentRuntime {
 
   private async runTurn(item: TurnItem): Promise<void> {
     try {
+      if (item.deliveryId) await this.ports.deliveryLifecycle?.start(item.deliveryId);
       await this.runTurnActive(item);
+      if (item.deliveryId) await this.ports.deliveryLifecycle?.finish(item.deliveryId);
     } catch (error) {
       if (!this.terminalItems.has(item)) {
         this.terminalItems.add(item);
@@ -729,11 +739,33 @@ export class AgentRuntime {
       state.resolve = resolve;
       state.reject = reject;
     });
+    let checking = false;
+    const reconciliation = setInterval(() => {
+      if (checking || state.settled || state.completionStarted || !session.terminalTurnStatus)
+        return;
+      checking = true;
+      void session
+        .terminalTurnStatus(binding.threadId, turnId)
+        .then((status) => {
+          if (!status || state.settled || state.completionStarted || this.session !== session)
+            return;
+          state.completionStarted = true;
+          if (status !== "completed")
+            state.outcome = status === "interrupted" ? "interrupted" : "failed";
+          void this.complete(state);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          checking = false;
+        });
+    }, 30_000);
+    reconciliation.unref();
     try {
       await this.forwardProgress(item, () => this.ports.progress?.bindTurn(progressSource, turnId));
       this.drainPendingStart(barrier, turnId);
       await completion;
     } finally {
+      clearInterval(reconciliation);
       this.closePendingStart(barrier);
       this.clearActive(turnId);
     }
@@ -1225,15 +1257,19 @@ export class AgentRuntime {
 
   private async complete(current: TurnState): Promise<void> {
     try {
-      await this.deliver(current);
-      await this.closeProgress(current);
+      await deadline(this.deliver(current), 120_000);
+      await deadline(this.closeProgress(current), 15_000);
       this.settle(current);
     } catch (error) {
       if (current.outcome !== "interrupted") current.outcome = "failed";
-      await this.closeProgress(
-        current,
-        current.outcome === "failed" ? "Discord final delivery failed." : undefined,
-      );
+      current.finalDeliveryController.abort();
+      await deadline(
+        this.closeProgress(
+          current,
+          current.outcome === "failed" ? "Discord final delivery failed." : undefined,
+        ),
+        15_000,
+      ).catch(() => undefined);
       this.settle(current, error);
     }
   }
@@ -1724,5 +1760,29 @@ function validateOptions(options: AgentRuntimeOptions): void {
     (typeof options.clock.now !== "function" || typeof options.clock.sleep !== "function")
   ) {
     throw new BridgeError("INVALID_ARGUMENT", "Invalid AgentRuntime clock.");
+  }
+}
+
+async function deadline<T>(operation: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new BridgeError(
+                "TIMEOUT",
+                "Final delivery exceeded its deadline; do not resend automatically.",
+              ),
+            ),
+          milliseconds,
+        );
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

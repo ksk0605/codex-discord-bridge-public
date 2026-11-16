@@ -12,6 +12,7 @@ export interface TurnInput {
   announceChannelId?: string;
   // Start this turn in a fresh Codex thread (set only by inject --new-thread).
   freshThread?: boolean;
+  deliveryId?: string;
   text: string;
   attachments?: LocalDiscordAttachment[];
 }

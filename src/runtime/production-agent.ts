@@ -61,6 +61,7 @@ import {
   type AgentRuntimeSession,
 } from "./agent-runtime.js";
 import { ApprovalRouter } from "./approval-router.js";
+import { DeliveryLedger } from "./delivery-ledger.js";
 
 const APPROVAL_METHODS: readonly ApprovalRequestMethod[] = [
   "item/commandExecution/requestApproval",
@@ -199,6 +200,7 @@ export function createRuntimeSession(
     }
   };
   return {
+    terminalTurnStatus: (threadId, turnId) => session.terminalTurnStatus(threadId, turnId),
     listModels: () => session.listModels(),
     resume: (threadId, workspace, inbox) => session.resume(threadId, workspace, inbox),
     startTurn: (threadId, input, source, settings) =>
@@ -476,7 +478,11 @@ export async function createProductionAgentComponent(
   const appServer =
     options.createAppServer?.(runtimeAppServerOptions) ??
     new RuntimeAppServer(workspaceNormalizer, journal, approval);
+  const deliveryLedger = new DeliveryLedger(
+    join(context.paths.instanceDirectory(context.binding.id), "delivery-ledger.json"),
+  );
   const runtime = new AgentRuntime({
+    deliveryLifecycle: deliveryLedger,
     registry: createRuntimeRegistryPort(registry, context.binding.id, inbox),
     appServer,
     output: {
@@ -514,6 +520,10 @@ export async function createProductionAgentComponent(
     }) ?? fallbackManager;
   adapter = new DiscordGatewayAdapter({
     botName: context.bot.name,
+    persistInjected: async (input) => {
+      const { deliveryId: _id, ...persisted } = input;
+      await deliveryLedger.accept(persisted);
+    },
     transport,
     registry,
     runtime,
@@ -587,6 +597,31 @@ export async function createProductionAgentComponent(
       try {
         await runtime.start();
         await adapter.start(context.token);
+        const recovered = await deliveryLedger.recover();
+        for (const id of recovered.uncertain)
+          reportError(new Error(`Delivery ${id} requires reconciliation; not replayed.`));
+        for (const input of recovered.pending) {
+          if (
+            injectConfig === undefined ||
+            (input.announceChannelId !== undefined &&
+              input.announceChannelId !== input.channelId &&
+              !injectConfig.announceChannelIds?.includes(input.announceChannelId))
+          ) {
+            reportError(new Error("Recovered delivery blocked by current inject configuration."));
+            continue;
+          }
+          await adapter.restoreInjected({
+            channelId: input.channelId,
+            messageId: input.messageId,
+            authorId: input.authorId,
+            text: input.text,
+            ...(input.guildId === undefined ? {} : { guildId: input.guildId }),
+            ...(input.announceChannelId === undefined
+              ? {}
+              : { announceChannelId: input.announceChannelId }),
+            ...(input.freshThread === undefined ? {} : { freshThread: input.freshThread }),
+          });
+        }
         if (inject !== undefined) {
           injectServer = await startInjectSocketServer({
             socketPath: injectSocketPath(context.paths, context.binding.id),

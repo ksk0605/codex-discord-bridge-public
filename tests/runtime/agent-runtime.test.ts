@@ -338,6 +338,88 @@ function outboundFile(
 }
 
 describe("AgentRuntime", () => {
+  it("reconciles a completed backend turn when its notification is lost without rerunning the model", async () => {
+    const session = new FakeSession();
+    const check = vi.fn(async () => "completed" as const);
+    const runtime = new AgentRuntime(
+      ports(Object.assign(session, { terminalTurnStatus: check }), {
+        sendText: vi.fn(async () => [testReceipt()]),
+      }),
+    );
+    await runtime.start();
+    vi.useFakeTimers();
+    const turn = runtime.enqueue(input);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.startCalls).toBe(1);
+    try {
+      await vi.advanceTimersByTimeAsync(31_000);
+      await turn;
+      expect(check).toHaveBeenCalledWith(binding.threadId, "turn-1");
+      expect(session.startCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      await runtime.stop();
+    }
+  });
+  it("does not release a backend turn that still reports inProgress", async () => {
+    const session = Object.assign(new FakeSession(), {
+      terminalTurnStatus: vi.fn(async () => undefined),
+    });
+    const runtime = new AgentRuntime(
+      ports(session, { sendText: vi.fn(async () => [testReceipt()]) }),
+    );
+    await runtime.start();
+    vi.useFakeTimers();
+    const turn = runtime.enqueue(input);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.startCalls).toBe(1);
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(runtime.queue.depth()).toBe(1);
+      session.emit({ method: "turn/completed", threadId: binding.threadId, turnId: "turn-1" });
+      await vi.advanceTimersByTimeAsync(1000);
+      await turn;
+    } finally {
+      vi.useRealTimers();
+      await runtime.stop();
+    }
+  });
+
+  it("bounds a hung final transport without repeating model work", async () => {
+    const session = new FakeSession();
+    const output = { sendText: vi.fn(() => new Promise<never>(() => {})) };
+    const runtime = new AgentRuntime(ports(session, output));
+    await runtime.start();
+    vi.useFakeTimers();
+    try {
+      const turn = runtime.enqueue(input);
+      const rejection = expect(turn).rejects.toMatchObject({ code: "TIMEOUT" });
+      await vi.advanceTimersByTimeAsync(0);
+      session.emit({
+        method: "item/started",
+        threadId: binding.threadId,
+        turnId: "turn-1",
+        itemId: "answer",
+        kind: "agentMessage",
+      });
+      session.emit({
+        method: "item/completed",
+        threadId: binding.threadId,
+        turnId: "turn-1",
+        itemId: "answer",
+        kind: "agentMessage",
+        text: "answer",
+      });
+      session.emit({ method: "turn/completed", threadId: binding.threadId, turnId: "turn-1" });
+      await vi.advanceTimersByTimeAsync(122_000);
+      await rejection;
+      expect(runtime.queue.depth()).toBe(0);
+      expect(session.startCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      await runtime.stop();
+    }
+  });
   it("marks a queued source running before turn/start resolves and binds only its returned turn", async () => {
     const session = new FakeSession();
     const start = deferred<{ turnId: string }>();

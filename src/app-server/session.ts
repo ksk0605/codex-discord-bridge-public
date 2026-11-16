@@ -1122,6 +1122,30 @@ export class CodexSessionService {
     throw runtimeError("Codex App Server thread list exceeded the configured page limit.");
   }
 
+  async terminalTurnStatus(
+    threadId: string,
+    turnId: string,
+  ): Promise<"completed" | "failed" | "interrupted" | undefined> {
+    const raw = await this.request("thread/read", { threadId, includeTurns: true });
+    const parsed = z
+      .object({
+        thread: z.object({
+          id: z.string(),
+          turns: z.array(
+            z.object({
+              id: z.string(),
+              status: z.enum(["completed", "failed", "interrupted", "inProgress"]),
+            }),
+          ),
+        }),
+      })
+      .parse(raw);
+    if (parsed.thread.id !== threadId)
+      throw runtimeError("Thread reconciliation identity mismatch.");
+    const turn = parsed.thread.turns.find((turn) => turn.id === turnId);
+    return turn?.status === "inProgress" ? undefined : turn?.status;
+  }
+
   async read(threadIdInput: string): Promise<ThreadSummary> {
     const threadId = parseExternal(ThreadIdSchema, threadIdInput, "Invalid Codex thread ID.");
     const result = await this.request("thread/read", { threadId, includeTurns: false });

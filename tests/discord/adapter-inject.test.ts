@@ -12,7 +12,7 @@ const GUILD = "300000000000000001";
 const POSTED = "600000000000000001";
 const BOT_USER = "100000000000000002";
 
-function fixture() {
+function fixture(persistInjected?: (input: TurnInput) => Promise<void>) {
   const sent: Array<{ channelId: string; content: string; replyToMessageId?: string }> = [];
   const calls: string[] = [];
   const transport = {
@@ -42,10 +42,14 @@ function fixture() {
   } as unknown as DiscordAgentRuntime;
   const errors: unknown[] = [];
   const adapter = new DiscordGatewayAdapter({
+    ...(persistInjected === undefined ? {} : { persistInjected }),
     botName: "bot-one",
     transport,
     registry: {
-      read: vi.fn(),
+      read: vi.fn(async () => ({
+        bots: { "bot-one": { botUserId: BOT_USER } },
+        access: { "bot-one": { groups: { [CHANNEL]: {} } } },
+      })),
       updateAccess: vi.fn(),
       confirmOwner: vi.fn(),
     } as never,
@@ -60,6 +64,55 @@ function fixture() {
 const turn = { channelId: CHANNEL, authorId: BOT_USER, text: "[marker]\n아침 브리핑" };
 
 describe("DiscordGatewayAdapter.injectTurn", () => {
+  it("restores pending work with a fresh progress source and the original durable identity", async () => {
+    const c = fixture();
+    await c.adapter.start("token");
+    await c.adapter.restoreInjected({ ...turn, messageId: "600000000000000099" });
+    expect(c.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: POSTED,
+        deliveryId: "600000000000000099",
+        text: turn.text,
+      }),
+    );
+    await c.adapter.stop();
+  });
+  it("blocks recovery when the destination is no longer allowlisted", async () => {
+    const c = fixture();
+    await c.adapter.start("token");
+    await expect(
+      c.adapter.restoreInjected({ ...turn, channelId: "200000000000000099", messageId: POSTED }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(c.enqueue).not.toHaveBeenCalled();
+    await c.adapter.stop();
+  });
+
+  it("does not return acceptance or enqueue until durable persistence completes", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persist = vi.fn(() => gate);
+    const c = fixture(persist);
+    await c.adapter.start("token");
+    const receipt = c.adapter.injectTurn(turn);
+    await vi.waitFor(() => expect(persist).toHaveBeenCalledOnce());
+    expect(c.enqueue).not.toHaveBeenCalled();
+    release();
+    await receipt;
+    expect(c.enqueue).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: POSTED }));
+    await c.adapter.stop();
+  });
+  it("rejects acceptance when durable persistence fails", async () => {
+    const c = fixture(async () => {
+      throw new Error("disk unavailable");
+    });
+    await c.adapter.start("token");
+    await expect(c.adapter.injectTurn(turn)).rejects.toBeInstanceOf(InjectedTurnRejectedError);
+    expect(c.enqueue).not.toHaveBeenCalled();
+    await c.adapter.stop();
+  });
+
   it("refuses before login", async () => {
     const context = fixture();
 

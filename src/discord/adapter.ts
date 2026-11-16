@@ -276,6 +276,7 @@ export interface DiscordGatewayAdapterOptions {
   readonly now?: () => number;
   readonly timers?: DiscordAdapterTimers;
   readonly typingIntervalMs?: number;
+  readonly persistInjected?: (input: TurnInput) => Promise<void>;
   readonly onIngress?: (event: DiscordIngressDiagnostic) => void;
   readonly onError?: (error: unknown) => void;
 }
@@ -813,6 +814,31 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
     }
   }
 
+  async restoreInjected(input: TurnInput): Promise<void> {
+    const { bot, policy } = await this.snapshot();
+    // A recovery must still be allowed by today's binding, never stale routing.
+    if (!Object.hasOwn(policy.groups, input.channelId)) {
+      throw new BridgeError("CONFLICT", "Recovered destination is no longer allowed.");
+    }
+    if (input.authorId !== bot.botUserId)
+      throw new BridgeError("CONFLICT", "Recovered bot identity changed.");
+    const posted = await this.options.transport.sendMessage(input.channelId, {
+      content: "중단 전에 접수한 대기 작업을 복원합니다.",
+    });
+    const source = {
+      channelId: input.channelId,
+      messageId: posted.id,
+      location: posted.guildId === undefined ? ("dm" as const) : ("guild" as const),
+      ...(posted.guildId === undefined ? {} : { guildId: posted.guildId }),
+    };
+    await this.observation.begin(source);
+    await this.observation.preparing(source);
+    await this.observation.queued(source);
+    void this.options.runtime
+      .enqueue({ ...input, messageId: posted.id, deliveryId: input.deliveryId ?? input.messageId })
+      .catch((error) => this.reportError(error));
+  }
+
   private async deliverInjectedTurn(
     input: DiscordInjectedTurn,
   ): Promise<{ receipt: DiscordInjectedReceipt; completion: Promise<void> }> {
@@ -851,7 +877,7 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
       if (progressStarted) {
         await this.observation.queued(source).catch((error) => this.reportError(error));
       }
-      completion = this.options.runtime.enqueue({
+      const durableInput: TurnInput = {
         channelId: input.channelId,
         messageId: posted.id,
         authorId: input.authorId,
@@ -861,7 +887,10 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
           : { announceChannelId: input.announceChannelId }),
         ...(input.freshThread === true ? { freshThread: true } : {}),
         text: input.text,
-      });
+        ...(this.options.persistInjected === undefined ? {} : { deliveryId: posted.id }),
+      };
+      await this.options.persistInjected?.(durableInput);
+      completion = this.options.runtime.enqueue(durableInput);
     } catch (error) {
       this.reportError(error);
       if (progressStarted) {
