@@ -94,6 +94,7 @@ class FakeSession implements AgentRuntimeSession {
   readonly starts: string[] = [];
   readonly turnSettings: Array<CodexTurnSettings | undefined> = [];
   readonly resumes: string[] = [];
+  readonly releaseInactiveThread = vi.fn(async (_threadId: string) => true);
   readonly interrupts: Array<[string, string]> = [];
   readonly listeners = new Map<
     AgentRuntimeEvent["method"],
@@ -2294,6 +2295,7 @@ describe("AgentRuntime", () => {
     await vi.waitFor(() => expect(session.starts).toHaveLength(1));
     expect(session.starts[0]).toMatch(new RegExp(`^${session.nextThreadId}:`));
     expect(session.creationKey).toMatch(/^[0-9a-f-]{36}$/);
+    expect(session.releaseInactiveThread).toHaveBeenCalledWith(binding.threadId);
     session.emit({ method: "turn/completed", threadId: session.nextThreadId, turnId: "turn-1" });
     await expect(fresh).resolves.toBeUndefined();
 
@@ -2303,6 +2305,23 @@ describe("AgentRuntime", () => {
     expect(session.starts[1]).toMatch(new RegExp(`^${session.nextThreadId}:`));
     session.emit({ method: "turn/completed", threadId: session.nextThreadId, turnId: "turn-2" });
     await expect(next).resolves.toBeUndefined();
+  });
+
+  it("keeps the replacement usable when old-thread cleanup is unsupported", async () => {
+    const session = new FakeSession();
+    session.releaseInactiveThread.mockRejectedValue(new Error("method not found"));
+    const retained = vi.fn(async () => undefined);
+    const output = {
+      sendText: vi.fn(async () => [testReceipt()]),
+      reportRetainedThread: retained,
+    } satisfies AgentRuntimeOutput;
+    const runtime = new AgentRuntime(ports(session, output), { clock: immediateClock });
+    await runtime.start();
+    await expect(runtime.newSession(false, "creation-key")).resolves.toEqual({
+      threadId: session.nextThreadId,
+    });
+    expect(retained).toHaveBeenCalledWith(binding.threadId);
+    expect(runtime.state).toBe("running");
   });
 
   it("keeps agent model settings when replacing the Codex thread", async () => {

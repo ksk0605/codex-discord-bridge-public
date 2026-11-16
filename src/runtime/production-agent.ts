@@ -490,6 +490,11 @@ export async function createProductionAgentComponent(
       reportOrphanThread: async (threadId) => {
         process.stderr.write(`Unbound Codex thread requires repair: ${threadId}\n`);
       },
+      reportRetainedThread: async (threadId) => {
+        process.stderr.write(
+          `Previous Codex thread retained (busy, background commands, or unsupported cleanup): ${threadId}\n`,
+        );
+      },
     },
     progress,
   });

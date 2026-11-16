@@ -1132,6 +1132,31 @@ export class CodexSessionService {
     return toThreadSummary(parsed.thread);
   }
 
+  // Unsubscribe, never archive/delete/interrupt. Unsupported or ambiguous state is retained.
+  async releaseInactiveThread(threadIdInput: string): Promise<boolean> {
+    const threadId = parseExternal(ThreadIdSchema, threadIdInput, "Invalid Codex thread ID.");
+    const idle = async () => {
+      const result = await this.request("thread/read", { threadId, includeTurns: false });
+      const probe = z
+        .object({
+          thread: z
+            .object({
+              id: z.literal(threadId),
+              status: z.object({ type: z.literal("idle") }).passthrough(),
+            })
+            .passthrough(),
+        })
+        .safeParse(result);
+      return probe.success;
+    };
+    if (!(await idle())) return false;
+    const terminals = await this.request("thread/backgroundTerminals/list", { threadId, limit: 1 });
+    if (terminals.data.length !== 0 || terminals.nextCursor !== null) return false;
+    if (!(await idle())) return false;
+    const result = await this.request("thread/unsubscribe", { threadId });
+    return result.status === "unsubscribed" || result.status === "notSubscribed";
+  }
+
   async listModels(): Promise<readonly CodexModelCatalogEntry[]> {
     const models: CodexModelCatalogEntry[] = [];
     const seenIds = new Set<string>();

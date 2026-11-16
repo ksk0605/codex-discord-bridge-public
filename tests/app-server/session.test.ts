@@ -1700,3 +1700,45 @@ describe("outbound Discord file helpers", () => {
     ).resolves.toEqual({ visibleText: text, files: [] });
   });
 });
+
+describe("safe old-thread resource release", () => {
+  it("unsubscribes only an idle thread with no background terminals after rechecking status", async () => {
+    const calls: string[] = [];
+    const { client } = clientWith(async (method) => {
+      calls.push(method);
+      if (method === "thread/read") return { thread: { id: THREAD_ONE, status: { type: "idle" } } };
+      if (method === "thread/backgroundTerminals/list") return { data: [], nextCursor: null };
+      if (method === "thread/unsubscribe") return { status: "unsubscribed" };
+      throw Error(method);
+    });
+    const service = sessionService(client);
+    expect(typeof service.releaseInactiveThread).toBe("function");
+    await expect(service.releaseInactiveThread(THREAD_ONE)).resolves.toBe(true);
+    expect(calls).toEqual([
+      "thread/read",
+      "thread/backgroundTerminals/list",
+      "thread/read",
+      "thread/unsubscribe",
+    ]);
+  });
+  it.each(["active", "systemError", "notLoaded", undefined])(
+    "retains a thread with unsafe or unknown status %s",
+    async (status) => {
+      const { client, request } = clientWith(async () => ({
+        thread: { id: THREAD_ONE, status: status ? { type: status } : undefined },
+      }));
+      const service = sessionService(client);
+      await expect(service.releaseInactiveThread(THREAD_ONE)).resolves.toBe(false);
+      expect(request.mock.calls.some((c) => c[0] === "thread/unsubscribe")).toBe(false);
+    },
+  );
+  it("retains background commands and cannot turn cleanup into task failure on unsupported servers", async () => {
+    const { client, request } = clientWith(async (method) =>
+      method === "thread/read"
+        ? { thread: { id: THREAD_ONE, status: { type: "idle" } } }
+        : { data: [{ processId: "background" }], nextCursor: null },
+    );
+    await expect(sessionService(client).releaseInactiveThread(THREAD_ONE)).resolves.toBe(false);
+    expect(request.mock.calls.some((c) => c[0] === "thread/unsubscribe")).toBe(false);
+  });
+});

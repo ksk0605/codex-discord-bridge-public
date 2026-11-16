@@ -97,6 +97,7 @@ export interface AgentRuntimeSession {
     inbox: string,
     creationKey: string,
   ): Promise<{ threadId: string }>;
+  releaseInactiveThread?(threadId: string): Promise<boolean>;
   dispose?(): void;
 }
 
@@ -140,6 +141,7 @@ export interface AgentRuntimeOutput {
     files?: readonly AuthorizedOutboundFile[],
   ): Promise<void>;
   reportOrphanThread?(threadId: string): Promise<void>;
+  reportRetainedThread?(threadId: string): Promise<void>;
 }
 
 export interface AgentRuntimeDeliveryDirective {
@@ -607,6 +609,7 @@ export class AgentRuntime {
           return { threadId: created.threadId };
         }
         this.bindSession(oldSession);
+        await this.releasePreviousThread(oldSession, oldBinding.threadId);
         this.deliveryPaused = false;
         return { threadId: created.threadId };
       } catch (error) {
@@ -1389,6 +1392,27 @@ export class AgentRuntime {
       return;
     }
     this.bindSession(session);
+    await this.releasePreviousThread(session, oldBinding.threadId);
+  }
+
+  private async releasePreviousThread(
+    session: AgentRuntimeSession,
+    previousThreadId: string,
+  ): Promise<void> {
+    if (
+      !this.binding ||
+      this.binding.threadId === previousThreadId ||
+      !session.releaseInactiveThread
+    )
+      return;
+    let released = false;
+    try {
+      released = await session.releaseInactiveThread(previousThreadId);
+    } catch {
+      /* Leave it loaded; task replacement still succeeded. */
+    }
+    if (!released)
+      await this.ports.output.reportRetainedThread?.(previousThreadId).catch(() => undefined);
   }
 
   private async reportOrphan(threadId: string): Promise<void> {

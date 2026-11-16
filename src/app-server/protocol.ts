@@ -276,6 +276,18 @@ export const clientRequestSchemas = {
   "thread/list": { params: ThreadListParamsSchema, result: ThreadListResponseSchema },
   "model/list": { params: ModelListParamsSchema, result: ModelListResponseSchema },
   "thread/read": { params: ThreadReadParamsSchema, result: ThreadResponseSchema },
+  "thread/backgroundTerminals/list": {
+    params: z.object({ threadId: z.string(), limit: z.number().int().optional() }),
+    result: z
+      .object({ data: z.array(z.unknown()), nextCursor: z.string().nullable() })
+      .passthrough(),
+  },
+  "thread/unsubscribe": {
+    params: z.object({ threadId: z.string() }),
+    result: z
+      .object({ status: z.enum(["notLoaded", "notSubscribed", "unsubscribed"]) })
+      .passthrough(),
+  },
   "thread/inject_items": {
     params: ThreadInjectItemsParamsSchema,
     result: ThreadInjectItemsResponseSchema,
