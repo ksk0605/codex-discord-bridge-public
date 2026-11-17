@@ -1037,6 +1037,8 @@ export class CodexSessionService {
     const result = await this.request("thread/resume", {
       ...configuration,
       threadId,
+      // Resume the full server-side context without retransmitting its unbounded history.
+      excludeTurns: true,
       developerInstructions: composeFileInstructions(workspace.developerInstructions),
     });
     const parsed = parseResult(ThreadIdentityResponseSchema, result, "thread/resume");
@@ -1126,23 +1128,24 @@ export class CodexSessionService {
     threadId: string,
     turnId: string,
   ): Promise<"completed" | "failed" | "interrupted" | undefined> {
-    const raw = await this.request("thread/read", { threadId, includeTurns: true });
+    // Status only: never hydrate accumulated tool output into the RPC transport.
+    const raw = await this.request("thread/turns/list", {
+      threadId,
+      limit: 1,
+      sortDirection: "desc",
+      itemsView: "notLoaded",
+    });
     const parsed = z
       .object({
-        thread: z.object({
-          id: z.string(),
-          turns: z.array(
-            z.object({
-              id: z.string(),
-              status: z.enum(["completed", "failed", "interrupted", "inProgress"]),
-            }),
-          ),
-        }),
+        data: z.array(
+          z.object({
+            id: z.string(),
+            status: z.enum(["completed", "failed", "interrupted", "inProgress"]),
+          }),
+        ),
       })
       .parse(raw);
-    if (parsed.thread.id !== threadId)
-      throw runtimeError("Thread reconciliation identity mismatch.");
-    const turn = parsed.thread.turns.find((turn) => turn.id === turnId);
+    const turn = parsed.data.find((turn) => turn.id === turnId);
     return turn?.status === "inProgress" ? undefined : turn?.status;
   }
 

@@ -276,6 +276,20 @@ export const clientRequestSchemas = {
   "thread/list": { params: ThreadListParamsSchema, result: ThreadListResponseSchema },
   "model/list": { params: ModelListParamsSchema, result: ModelListResponseSchema },
   "thread/read": { params: ThreadReadParamsSchema, result: ThreadResponseSchema },
+  "thread/turns/list": {
+    params: z.object({
+      threadId: z.string(),
+      limit: z.number().int().positive(),
+      sortDirection: z.enum(["asc", "desc"]),
+      itemsView: z.literal("notLoaded"),
+    }),
+    result: z
+      .object({
+        data: z.array(z.object({ id: z.string(), status: TurnStatusSchema })),
+        nextCursor: z.string().nullable().optional(),
+      })
+      .passthrough(),
+  },
   "thread/backgroundTerminals/list": {
     params: z.object({ threadId: z.string(), limit: z.number().int().optional() }),
     result: z

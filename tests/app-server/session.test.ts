@@ -399,10 +399,12 @@ describe("CodexSessionService thread operations", () => {
     } = startParams;
     const {
       threadId: _threadId,
+      excludeTurns,
       developerInstructions: resumeInstructions,
       ...resumeCore
     } = resumeParams;
 
+    expect(excludeTurns).toBe(true);
     expect(resumeCore).toEqual(startCore);
     expect(startInstructions).toBe(
       `Follow local instructions.\n\n${DISCORD_FILE_FALLBACK_INSTRUCTIONS}`,
@@ -652,6 +654,24 @@ describe("CodexSessionService thread operations", () => {
     expect(request.mock.calls[0]?.[0]).toBe("thread/start");
   });
 
+  it("reads only the latest turn status without hydrating historical items", async () => {
+    const { client, request } = clientWith(async () => ({
+      data: [{ id: "target-turn", status: "completed" }],
+      nextCursor: null,
+    }));
+    expect(await sessionService(client).terminalTurnStatus(THREAD_TWO, "target-turn")).toBe(
+      "completed",
+    );
+    expect(request).toHaveBeenCalledWith("thread/turns/list", {
+      threadId: THREAD_TWO,
+      limit: 1,
+      sortDirection: "desc",
+      itemsView: "notLoaded",
+    });
+    expect(
+      await sessionService(client).terminalTurnStatus(THREAD_TWO, "different-turn"),
+    ).toBeUndefined();
+  });
   it("resumes the exact existing thread ID without creating a fallback", async () => {
     const { client, request } = clientWith(async (_method, params) => ({
       thread: { id: params.threadId },
@@ -659,6 +679,10 @@ describe("CodexSessionService thread operations", () => {
     const sessions = sessionService(client);
 
     await expect(sessions.resume(THREAD_TWO, profile(), inboxDirectory)).resolves.toBeUndefined();
+    expect(request).toHaveBeenCalledWith(
+      "thread/resume",
+      expect.objectContaining({ excludeTurns: true }),
+    );
     expect(request).toHaveBeenCalledOnce();
     expect(request.mock.calls[0]).toEqual([
       "thread/resume",
