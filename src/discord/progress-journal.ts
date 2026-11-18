@@ -315,10 +315,10 @@ function withUpdatedAt(
   record: ProgressObservationRecord,
   updatedAt: string,
 ): ProgressObservationRecord {
-  if (Date.parse(updatedAt) < Date.parse(record.updatedAt)) {
-    throw conflict("Progress observation timestamp cannot move backward.");
-  }
-  return { ...record, updatedAt };
+  return {
+    ...record,
+    updatedAt: Date.parse(updatedAt) < Date.parse(record.updatedAt) ? record.updatedAt : updatedAt,
+  };
 }
 
 const legalTransitions: Readonly<Record<ObservationState, readonly ObservationState[]>> = {

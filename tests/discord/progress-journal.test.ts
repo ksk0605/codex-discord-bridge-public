@@ -68,6 +68,16 @@ afterEach(async () => {
 });
 
 describe("AtomicProgressObservationJournal", () => {
+  it("closes a running observation after the wall clock moves backward", async () => {
+    const journal = new AtomicProgressObservationJournal({ filePath: await journalPath() });
+    await runningObservation(journal);
+    await journal.close(SOURCE_ONE, "completed", QUEUED_AT);
+    await expect(journal.get(SOURCE_ONE)).resolves.toMatchObject({
+      state: "completed",
+      updatedAt: RUNNING_AT,
+    });
+  });
+
   it("persists creation intent before destination confirmation and freezes reads", async () => {
     const filePath = await journalPath();
     const journal = new AtomicProgressObservationJournal({ filePath });

@@ -774,8 +774,10 @@ export class AgentRuntime {
             state.outcome = status === "interrupted" ? "interrupted" : "failed";
           void this.complete(state);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           this.diagnose(item, "reconcile-failed", turnId);
+          const category = error instanceof BridgeError ? error.code : "unexpected";
+          this.diagnose(item, `reconcile-error-${category}`, turnId);
           reconciliationFailures += 1;
           if (reconciliationFailures === 3)
             void deadline(
