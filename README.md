@@ -20,6 +20,28 @@ The bot needs normal channel access plus permission to create and send in public
 delivery also requires permission to attach files. The bridge never creates Discord applications or
 bot tokens.
 
+## Create the Discord Bot
+
+These steps happen in the Discord web or desktop app and must be done by a person. An agent setting
+up the bridge should stop here and hand these steps to the user.
+
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and choose
+   **New Application**. Give it the name the agent should have.
+2. Open **Bot** in the left menu.
+   - Under **Privileged Gateway Intents**, turn on **Message Content Intent** and save. Without it
+     the bot sees messages but not their text.
+   - Choose **Reset Token** and copy the token. Keep it only until `provision` asks for it; do not
+     paste it into Discord, a chat with an agent, a file, or a command line.
+3. Open **OAuth2 → URL Generator**.
+   - Scopes: `bot` and `applications.commands`.
+   - Bot permissions: View Channels, Send Messages, Send Messages in Threads, Create Public
+     Threads, Read Message History, Attach Files, Add Reactions.
+   - Open the generated URL, pick your server, and authorize.
+4. Copy the IDs `provision` needs. In Discord, open **User Settings → Advanced** and turn on
+   **Developer Mode**. Then right-click your own name → **Copy User ID** (this is `--owner`), and
+   right-click the channel the agent should answer in → **Copy Channel ID** (this is `--channel`).
+   If the channel is private, add the bot to it.
+
 ## Build
 
 ```bash
@@ -33,7 +55,7 @@ require a bridge-native helper.
 
 ## Provision an Agent
 
-Create a Discord bot, invite it to the target server, then run:
+After [creating the Discord bot](#create-the-discord-bot), run:
 
 ```bash
 node dist/cli.js provision bot-one \
@@ -48,6 +70,79 @@ directory can be anywhere on the machine.
 
 Use `--mention` to require bot mentions in an allowed channel. Repeat `--channel` to allow more
 channels for the same bot. Use a separate Discord bot token for every additional agent.
+
+## Everyday Commands
+
+`<agent>` is the agent name or id shown by `status`.
+
+```bash
+node dist/cli.js status            # every agent: desiredState, observedState, tmux session
+node dist/cli.js status <agent>    # one agent
+node dist/cli.js restart <agent>   # stop and start again (use after rebuilding the bridge)
+node dist/cli.js stop <agent>      # stop; it stays stopped across reboots
+node dist/cli.js start <agent>     # start a stopped agent
+node dist/cli.js restore           # start every agent whose desiredState is running
+```
+
+Each agent runs in a detached tmux session named in `status` (for example
+`codex-discord-1a2b3c4d`). `tmux attach -t <session>` shows it live; detach with `Ctrl-b d` rather
+than closing the window. Per-agent state and logs live in
+`~/.codex-discord-bridge/instances/<agent id>/`, including `runtime-lifecycle.jsonl`.
+
+## Start Agents After a Mac Reboot
+
+tmux sessions do not survive a reboot. On macOS, a LaunchAgent can run `restore` at login. Replace
+the paths with your own (`which node` and the absolute path to this repository):
+
+```xml
+<!-- ~/Library/LaunchAgents/com.example.codex-discord-restore.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.codex-discord-restore</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/ABSOLUTE/PATH/TO/codex-discord-bridge-public/dist/cli.js</string>
+    <string>restore</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/tmp/codex-discord-restore.log</string>
+  <key>StandardErrorPath</key><string>/tmp/codex-discord-restore.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.example.codex-discord-restore.plist
+```
+
+`PATH` must include the directories that hold `node`, `tmux`, and `codex`. Only agents whose
+`desiredState` is `running` come back; agents you stopped stay stopped. Linux uses systemd instead
+(see below).
+
+## Troubleshooting
+
+- **The bot is online but never answers.** Check that Message Content Intent is on, that the message
+  is in a channel passed with `--channel`, that it came from the `--owner` user, and, with
+  `--mention`, that it mentions the bot. Then check `status`.
+- **The bot is offline.** Run `status`. If `observedState` is not `running`, run `start <agent>`.
+  If it says `running` but the bot is offline, attach to its tmux session to read the error, then
+  `restart <agent>`.
+- **The agent stopped answering in the middle of work.** Attach to its tmux session and read the
+  last error, and look at the end of `runtime-lifecycle.jsonl` for a failure that repeats every few
+  seconds. `progress reconcile <agent>` retries closing out the stuck turn. If that does not help,
+  `restart <agent>`.
+- **`restart` times out ("tmux session did not stop").** The agent is now marked stopped. Run
+  `stop --force <agent>` and then `start <agent>`. Check `status` afterwards: `desiredState` must be
+  `running`, or the agent stays down after the next reboot.
+- **`codex` is not found or not logged in.** Run `codex login` as the same OS user that runs the
+  bridge, then `restart <agent>`.
 
 ## Linux and EC2
 
