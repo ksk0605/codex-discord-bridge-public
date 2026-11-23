@@ -20,6 +20,14 @@ function expectNoUnpairedSurrogates(value: string): void {
 }
 
 describe("chunkDiscordMarkdown", () => {
+  it("renders local file links as readable paths without changing web links or code", () => {
+    const input =
+      "[원고](/Users/test/report.md:12) [공백](</tmp/My Report.md>) [웹](https://example.com) `[예시](/tmp/example)`";
+    expect(chunkDiscordMarkdown(input)).toEqual([
+      "원고 (`/Users/test/report.md:12`) 공백 (`/tmp/My Report.md`) [웹](https://example.com) `[예시](/tmp/example)`",
+    ]);
+  });
+
   it("renders a GFM table as one aligned Discord code block", () => {
     expect(chunkDiscordMarkdown(BASIC_TABLE)).toEqual([BASIC_RENDERED]);
   });

@@ -1,4 +1,4 @@
-import type { Root, Table } from "mdast";
+import type { Nodes, Root, Table } from "mdast";
 import { toString as mdastToString } from "mdast-util-to-string";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
@@ -74,8 +74,41 @@ function parsedTable(node: Table): ParsedTable | undefined {
   });
 }
 
-function parseTables(text: string): readonly ParsedTable[] | undefined {
-  const tree = MARKDOWN_PROCESSOR.parse(text) as Root;
+function renderLocalLinks(text: string, root: Root): string {
+  const edits: Array<{ start: number; end: number; replacement: string }> = [];
+  const pending: Nodes[] = [root];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (node === undefined) break;
+    if (node.type === "link" && /^(?:file:\/\/|\/(?!\/)|\.\.?\/|~\/)/iu.test(node.url)) {
+      const start = positionedOffset(node.position?.start.offset);
+      const end = positionedOffset(node.position?.end.offset);
+      if (start === undefined || end === undefined || end <= start) continue;
+      const path = node.url;
+      const backticks = Math.max(
+        0,
+        ...Array.from(path.matchAll(/`+/gu), (match) => match[0].length),
+      );
+      const fence = "`".repeat(backticks + 1);
+      const literal = backticks === 0 ? path : ` ${path} `;
+      const label = mdastToString(node).replace(/\s+/gu, " ").trim();
+      edits.push({
+        start,
+        end,
+        replacement: label ? `${label} (${fence}${literal}${fence})` : `${fence}${literal}${fence}`,
+      });
+    } else if ("children" in node) {
+      pending.push(...node.children);
+    }
+  }
+  let rendered = text;
+  for (const edit of edits.sort((a, b) => b.start - a.start)) {
+    rendered = rendered.slice(0, edit.start) + edit.replacement + rendered.slice(edit.end);
+  }
+  return rendered;
+}
+
+function parseTables(text: string, tree: Root): readonly ParsedTable[] | undefined {
   const nodes = tree.children.filter((node): node is Table => node.type === "table");
   if (nodes.length === 0) return Object.freeze([]);
   if (nodes.length > MAX_TABLES) return undefined;
@@ -323,13 +356,18 @@ export function chunkDiscordMarkdown(
   text: string,
   options: DiscordChunkOptions = {},
 ): readonly string[] {
-  const fallback = chunkDiscordText(text, options);
-  if (text.length === 0 || text.length > MAX_MARKDOWN_SOURCE_LENGTH) return fallback;
+  if (text.length === 0 || text.length > MAX_MARKDOWN_SOURCE_LENGTH) {
+    return chunkDiscordText(text, options);
+  }
   const limit = options.limit ?? DISCORD_MESSAGE_LIMIT;
-  if (limit <= CODE_FENCE_OVERHEAD) return fallback;
-
   try {
-    const tables = parseTables(text);
+    let tree = MARKDOWN_PROCESSOR.parse(text) as Root;
+    const renderedText = renderLocalLinks(text, tree);
+    if (renderedText !== text) tree = MARKDOWN_PROCESSOR.parse(renderedText) as Root;
+    text = renderedText;
+    const fallback = chunkDiscordText(text, options);
+    if (limit <= CODE_FENCE_OVERHEAD) return fallback;
+    const tables = parseTables(text, tree);
     if (tables === undefined || tables.length === 0) return fallback;
 
     const output: string[] = [];
@@ -346,6 +384,6 @@ export function chunkDiscordMarkdown(
     if (plain.length > 0) output.push(...chunkDiscordText(plain, options));
     return Object.freeze(output);
   } catch {
-    return fallback;
+    return chunkDiscordText(text, options);
   }
 }
