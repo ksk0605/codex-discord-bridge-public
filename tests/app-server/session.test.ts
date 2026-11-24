@@ -672,6 +672,31 @@ describe("CodexSessionService thread operations", () => {
       await sessionService(client).terminalTurnStatus(THREAD_TWO, "different-turn"),
     ).toBeUndefined();
   });
+  it("requires a complete native record for the bound thread and exact root turn", async () => {
+    const path = join(inboxDirectory, `rollout-test-${THREAD_TWO}.jsonl`);
+    const { client } = clientWith(async () => ({ thread: { id: THREAD_TWO, path } }));
+    const sessions = sessionService(client);
+    await sessions.resume(THREAD_TWO, profile(), inboxDirectory);
+    const record = (turnId: string, root = turnId) =>
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: turnId, root_turn_id: root },
+      });
+    await writeFile(
+      path,
+      `${record("previous")}\n${record("target", "parent")}\n${record("target")}`,
+    );
+    await expect(
+      sessions.terminalTurnStatusFromRollout(THREAD_TWO, "target"),
+    ).resolves.toBeUndefined();
+    await writeFile(path, `${record("target")}\n`);
+    await expect(
+      sessions.terminalTurnStatusFromRollout(THREAD_ONE, "target"),
+    ).resolves.toBeUndefined();
+    await expect(sessions.terminalTurnStatusFromRollout(THREAD_TWO, "target")).resolves.toBe(
+      "completed",
+    );
+  });
   it("resumes the exact existing thread ID without creating a fallback", async () => {
     const { client, request } = clientWith(async (_method, params) => ({
       thread: { id: params.threadId },

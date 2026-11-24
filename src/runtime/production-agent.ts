@@ -201,6 +201,8 @@ export function createRuntimeSession(
     }
   };
   return {
+    terminalTurnStatusFromRollout: (threadId, turnId) =>
+      session.terminalTurnStatusFromRollout(threadId, turnId),
     terminalTurnStatus: (threadId, turnId) => session.terminalTurnStatus(threadId, turnId),
     listModels: () => session.listModels(),
     resume: (threadId, workspace, inbox) => session.resume(threadId, workspace, inbox),

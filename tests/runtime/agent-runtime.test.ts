@@ -361,6 +361,44 @@ describe("AgentRuntime", () => {
       await runtime.stop();
     }
   });
+  it("releases the queue once only after native completion confirms a failed status probe", async () => {
+    const terminalTurnStatusFromRollout = vi
+      .fn<() => Promise<"completed" | undefined>>()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce("completed");
+    const session = Object.assign(new FakeSession(), {
+      terminalTurnStatus: vi.fn(async () => {
+        throw new Error("status unavailable");
+      }),
+      terminalTurnStatusFromRollout,
+    });
+    const runtime = new AgentRuntime(
+      ports(session, { sendText: vi.fn(async () => [testReceipt()]) }),
+    );
+    await runtime.start();
+    vi.useFakeTimers();
+    try {
+      const first = runtime.enqueue(input);
+      void first.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      session.nextTurnId = "turn-2";
+      const second = runtime.enqueue({ ...input, messageId: "457" });
+      void second.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(session.startCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(terminalTurnStatusFromRollout).toHaveBeenCalledWith(binding.threadId, "turn-1");
+      expect(session.startCalls).toBe(2);
+      session.emit({ method: "turn/completed", threadId: binding.threadId, turnId: "turn-2" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(runtime.queue.depth()).toBe(0);
+      await Promise.all([first, second]);
+      expect(session.startCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      await runtime.stop().catch(() => undefined);
+    }
+  });
   it("does not release a backend turn that still reports inProgress", async () => {
     const session = Object.assign(new FakeSession(), {
       terminalTurnStatus: vi.fn(async () => undefined),

@@ -72,6 +72,10 @@ export interface AgentRuntimeSession {
     threadId: string,
     turnId: string,
   ): Promise<"completed" | "failed" | "interrupted" | undefined>;
+  terminalTurnStatusFromRollout?(
+    threadId: string,
+    turnId: string,
+  ): Promise<"completed" | undefined>;
   listModels(): Promise<readonly CodexModelCatalogEntry[]>;
   resume(threadId: string, workspace: WorkspaceProfile, inbox: string): Promise<void>;
   startTurn(
@@ -766,19 +770,38 @@ export class AgentRuntime {
       void turnSession
         .terminalTurnStatus(turnBinding.threadId, turnId)
         .then((status) => {
-          this.diagnose(item, status ? "reconcile-terminal" : "reconcile-active", turnId);
-          if (!status || state.settled || state.completionStarted || this.session !== turnSession)
-            return;
-          state.completionStarted = true;
-          if (status !== "completed")
-            state.outcome = status === "interrupted" ? "interrupted" : "failed";
-          void this.complete(state);
+          reconciliationFailures = 0;
+          return status;
         })
-        .catch((error: unknown) => {
+        .catch(async (error: unknown) => {
           this.diagnose(item, "reconcile-failed", turnId);
-          const category = error instanceof BridgeError ? error.code : "unexpected";
+          const category =
+            error instanceof BridgeError
+              ? error.code
+              : error instanceof Error && error.name === "ZodError"
+                ? "invalid-status-response"
+                : "unexpected";
           this.diagnose(item, `reconcile-error-${category}`, turnId);
           reconciliationFailures += 1;
+          if (
+            reconciliationFailures >= 3 &&
+            !state.settled &&
+            !state.completionStarted &&
+            this.session === turnSession
+          ) {
+            try {
+              const status = await turnSession.terminalTurnStatusFromRollout?.(
+                turnBinding.threadId,
+                turnId,
+              );
+              if (status) {
+                this.diagnose(item, "reconcile-rollout-terminal", turnId);
+                return status;
+              }
+            } catch {
+              this.diagnose(item, "reconcile-rollout-unavailable", turnId);
+            }
+          }
           if (reconciliationFailures === 3)
             void deadline(
               Promise.resolve(
@@ -790,6 +813,15 @@ export class AgentRuntime {
               ),
               1_000,
             ).catch(() => undefined);
+        })
+        .then((status) => {
+          this.diagnose(item, status ? "reconcile-terminal" : "reconcile-active", turnId);
+          if (!status || state.settled || state.completionStarted || this.session !== turnSession)
+            return;
+          state.completionStarted = true;
+          if (status !== "completed")
+            state.outcome = status === "interrupted" ? "interrupted" : "failed";
+          void this.complete(state);
         })
         .finally(() => {
           checking = false;

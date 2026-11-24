@@ -1,4 +1,6 @@
-import { isAbsolute } from "node:path";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
+import { basename, isAbsolute } from "node:path";
 import { z } from "zod";
 import { BridgeError } from "../domain/errors.js";
 import {
@@ -867,7 +869,11 @@ export class CodexSessionService {
   private readonly maxListItems: number;
   private readonly maxTurnInputCharacters: number;
   private activeFileContext:
-    | { readonly threadId: string; readonly workspace: NormalizedWorkspace }
+    | {
+        readonly threadId: string;
+        readonly workspace: NormalizedWorkspace;
+        readonly rolloutPath: string | undefined;
+      }
     | undefined;
 
   constructor(options: CodexSessionServiceOptions) {
@@ -1045,7 +1051,15 @@ export class CodexSessionService {
     if (parsed.thread.id !== threadId) {
       throw runtimeError("Codex App Server resumed a different thread than requested.");
     }
-    this.activeFileContext = Object.freeze({ threadId, workspace });
+    const path = parsed.thread.path;
+    const rolloutPath =
+      typeof path === "string" &&
+      isAbsolute(path) &&
+      basename(path).startsWith("rollout-") &&
+      basename(path).endsWith(`-${threadId}.jsonl`)
+        ? path
+        : undefined;
+    this.activeFileContext = Object.freeze({ threadId, workspace, rolloutPath });
   }
 
   async authorizeSendFile(
@@ -1147,6 +1161,47 @@ export class CodexSessionService {
       .parse(raw);
     const turn = parsed.data.find((turn) => turn.id === turnId);
     return turn?.status === "inProgress" ? undefined : turn?.status;
+  }
+
+  async terminalTurnStatusFromRollout(
+    threadId: string,
+    turnId: string,
+  ): Promise<"completed" | undefined> {
+    const context = this.activeFileContext;
+    if (context?.threadId !== threadId || !context.rolloutPath) return undefined;
+    const file = await open(
+      context.rolloutPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.size === 0) return undefined;
+      const size = Math.min(stat.size, 1024 * 1024);
+      const offset = stat.size - size;
+      const buffer = Buffer.alloc(size);
+      const { bytesRead } = await file.read(buffer, 0, size, offset);
+      const lines = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
+      lines.pop(); // A concurrent append may leave a partial record.
+      if (offset > 0) lines.shift();
+      const event = z.object({
+        type: z.literal("event_msg"),
+        payload: z.object({
+          type: z.literal("task_complete"),
+          turn_id: z.literal(turnId),
+          root_turn_id: z.literal(turnId).optional(),
+        }),
+      });
+      for (const line of lines.reverse()) {
+        try {
+          if (event.safeParse(JSON.parse(line)).success) return "completed";
+        } catch {
+          // Incomplete or malformed records are never evidence of completion.
+        }
+      }
+      return undefined;
+    } finally {
+      await file.close();
+    }
   }
 
   async read(threadIdInput: string): Promise<ThreadSummary> {
