@@ -474,11 +474,16 @@ export async function createProductionAgentComponent(
         typeof config.threadId !== "string" ||
         !/^\d{17,20}$/.test(config.parentChannelId) ||
         !/^\d{17,20}$/.test(config.threadId) ||
+        ("enabled" in config && typeof config.enabled !== "boolean") ||
         config.parentChannelId === config.threadId
       ) {
         throw new Error("Invalid fixed progress thread configuration.");
       }
-      return { parentChannelId: config.parentChannelId, threadId: config.threadId };
+      return {
+        parentChannelId: config.parentChannelId,
+        threadId: config.threadId,
+        enabled: !("enabled" in config) || config.enabled === true,
+      };
     })
     .catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") reportError(error);

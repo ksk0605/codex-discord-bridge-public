@@ -121,7 +121,11 @@ export type ProgressDeliveryOperation = (
 
 export interface DiscordProgressControllerOptions {
   readonly botUserId: string;
-  readonly fixedProgressThread?: { readonly parentChannelId: string; readonly threadId: string };
+  readonly fixedProgressThread?: {
+    readonly parentChannelId: string;
+    readonly threadId: string;
+    readonly enabled?: boolean;
+  };
   readonly createPump?: (destination: ProgressPumpDestination) => ProgressPump;
   readonly heartbeatIntervalMs?: number;
   readonly journal: ProgressObservationJournalPort;
@@ -808,7 +812,8 @@ export class DiscordProgressController {
         const fixed = this.fixedProgressThread;
         if (
           parsed.controllerSource.location === "guild" &&
-          fixed?.parentChannelId === parsed.source.channelId
+          fixed?.parentChannelId === parsed.source.channelId &&
+          fixed.enabled !== false
         ) {
           try {
             const inspection = await this.transport.inspectThread(fixed.threadId);
