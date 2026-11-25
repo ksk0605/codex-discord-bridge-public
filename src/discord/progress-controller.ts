@@ -121,6 +121,7 @@ export type ProgressDeliveryOperation = (
 
 export interface DiscordProgressControllerOptions {
   readonly botUserId: string;
+  readonly fixedProgressThread?: { readonly parentChannelId: string; readonly threadId: string };
   readonly createPump?: (destination: ProgressPumpDestination) => ProgressPump;
   readonly heartbeatIntervalMs?: number;
   readonly journal: ProgressObservationJournalPort;
@@ -278,6 +279,7 @@ export class DiscordProgressController {
   private readonly active = new Map<string, ActiveObservation>();
   private readonly beginning = new Map<string, Promise<ProgressBeginResult>>();
   private readonly botUserId: string;
+  private readonly fixedProgressThread: DiscordProgressControllerOptions["fixedProgressThread"];
   private readonly createPump: (destination: ProgressPumpDestination) => ProgressPump;
   private readonly heartbeatIntervalMs: number;
   private readonly journal: ProgressObservationJournalPort;
@@ -296,6 +298,7 @@ export class DiscordProgressController {
 
   constructor(options: DiscordProgressControllerOptions) {
     this.botUserId = options.botUserId;
+    this.fixedProgressThread = options.fixedProgressThread;
     this.journal = options.journal;
     this.transport = options.transport;
     this.createPump = options.createPump ?? ((destination) => new DiscordProgressPump(destination));
@@ -417,7 +420,9 @@ export class DiscordProgressController {
       record = await this.journal.beginCreation({
         createdAt: this.timestamp(),
         source: parsed.source,
-        threadCreationExpected: parsed.controllerSource.location === "guild",
+        threadCreationExpected:
+          parsed.controllerSource.location === "guild" &&
+          this.fixedProgressThread?.parentChannelId !== parsed.source.channelId,
       });
     } catch {
       return this.beginWithoutJournal(parsed);
@@ -437,7 +442,10 @@ export class DiscordProgressController {
       return this.fallbackAfterFailure(parsed, true);
     }
 
-    if (parsed.controllerSource.location !== "guild") {
+    if (
+      parsed.controllerSource.location !== "guild" ||
+      this.fixedProgressThread?.parentChannelId === parsed.source.channelId
+    ) {
       const inPlace = await this.beginInPlace(parsed, true);
       if (inPlace !== undefined) {
         return beginResult(inPlace.kind, inPlace.durable, prior !== undefined);
@@ -649,6 +657,9 @@ export class DiscordProgressController {
 
   async isProgressOnlyThread(event: DiscordProgressThreadIngress): Promise<boolean> {
     if (event.location !== "thread") return false;
+    if (this.fixedProgressThread?.threadId === event.channelId) {
+      return event.parentChannelId === this.fixedProgressThread.parentChannelId;
+    }
     if (!(await this.journal.isProgressThread(event.channelId))) return false;
     const inspection = await this.transport.inspectThread(event.channelId);
     if (
@@ -793,7 +804,24 @@ export class DiscordProgressController {
       },
       editStatus: async (messageId, content) =>
         this.transport.editMessage(parsed.source.channelId, messageId, { content }),
-      append: async () => {
+      append: async (content) => {
+        const fixed = this.fixedProgressThread;
+        if (
+          parsed.controllerSource.location === "guild" &&
+          fixed?.parentChannelId === parsed.source.channelId
+        ) {
+          try {
+            const inspection = await this.transport.inspectThread(fixed.threadId);
+            this.assertThreadDestination(inspection, {
+              ...fixed,
+              kind: "thread",
+              ownerId: this.botUserId,
+            });
+            return await this.transport.sendMessage(fixed.threadId, { content });
+          } catch (error) {
+            this.report(error);
+          }
+        }
         if (acceptedStatusId === undefined) {
           throw boundedRuntimeError("In-place progress status is unavailable.");
         }

@@ -299,6 +299,34 @@ afterEach(async () => {
 });
 
 describe("DiscordProgressController destination creation", () => {
+  it("keeps one parent status and appends only to a verified fixed thread", async () => {
+    const discord = transport();
+    discord.inspectThread.mockResolvedValue({
+      status: "found",
+      id: MESSAGE,
+      ownerId: BOT,
+      parentId: CHANNEL,
+    });
+    const pumps: ImmediatePump[] = [];
+    const progress = new DiscordProgressController({
+      botUserId: BOT,
+      fixedProgressThread: { parentChannelId: CHANNEL, threadId: MESSAGE },
+      journal: journalPort(journal),
+      transport: discord,
+      createPump: pumpFactory(pumps),
+      now: () => new Date(NOW),
+    });
+    await expect(progress.begin(guildSource())).resolves.toMatchObject({ kind: "inPlace" });
+    await pumps[0]?.destination.append("progress", new AbortController().signal);
+    expect(discord.createProgressThread).not.toHaveBeenCalled();
+    expect(discord.sendMessage).toHaveBeenNthCalledWith(1, CHANNEL, expect.anything());
+    expect(discord.sendMessage).toHaveBeenNthCalledWith(2, MESSAGE, { content: "progress" });
+    discord.inspectThread.mockResolvedValue({ status: "not-found" });
+    await pumps[0]?.destination.append("unroutable", new AbortController().signal);
+    expect(discord.sendMessage).toHaveBeenCalledTimes(2);
+    await progress.stop();
+  });
+
   it("persists intent before creating one message-started thread and reuses it on redelivery", async () => {
     const discord = transport();
     const pumps: ImmediatePump[] = [];

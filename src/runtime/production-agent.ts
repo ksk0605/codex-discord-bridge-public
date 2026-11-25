@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AppServerClient } from "../app-server/client.js";
 import { CodexAppServerProcess } from "../app-server/process.js";
@@ -459,7 +459,33 @@ export async function createProductionAgentComponent(
   const progressJournal =
     options.createProgressJournal?.(progressJournalOptions) ??
     new AtomicProgressObservationJournal(progressJournalOptions);
+  const fixedProgressThread = await readFile(
+    join(context.paths.instanceDirectory(context.binding.id), "fixed-progress-thread.json"),
+    "utf8",
+  )
+    .then((value) => {
+      const config: unknown = JSON.parse(value);
+      if (
+        typeof config !== "object" ||
+        config === null ||
+        !("parentChannelId" in config) ||
+        !("threadId" in config) ||
+        typeof config.parentChannelId !== "string" ||
+        typeof config.threadId !== "string" ||
+        !/^\d{17,20}$/.test(config.parentChannelId) ||
+        !/^\d{17,20}$/.test(config.threadId) ||
+        config.parentChannelId === config.threadId
+      ) {
+        throw new Error("Invalid fixed progress thread configuration.");
+      }
+      return { parentChannelId: config.parentChannelId, threadId: config.threadId };
+    })
+    .catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") reportError(error);
+      return undefined;
+    });
   const progressControllerOptions: DiscordProgressControllerOptions = {
+    ...(fixedProgressThread ? { fixedProgressThread } : {}),
     botUserId: context.bot.botUserId,
     journal: progressJournal,
     onError: reportError,
