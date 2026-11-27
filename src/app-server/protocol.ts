@@ -308,6 +308,11 @@ export const clientRequestSchemas = {
   },
   "turn/start": { params: TurnStartParamsSchema, result: TurnStartResponseSchema },
   "turn/interrupt": { params: TurnInterruptParamsSchema, result: TurnInterruptResponseSchema },
+  // Official owner override of one Auto Review denial (the TUI's /approve).
+  "thread/approveGuardianDeniedAction": {
+    params: z.object({ threadId: z.string(), event: z.record(z.string(), z.unknown()) }),
+    result: z.object({}).passthrough(),
+  },
 } as const;
 
 export type ClientRequestMethod = keyof typeof clientRequestSchemas;
@@ -552,8 +557,33 @@ const WarningNotificationSchema = z
   })
   .passthrough();
 
+// [UNSTABLE upstream] Auto Review (guardian) verdict for one escalated action.
+// Only the fields the bridge reads are validated; the rest passes through untouched.
+export const AutoApprovalReviewCompletedNotificationSchema = z
+  .object({
+    threadId: ProtocolIdentifierSchema,
+    turnId: ProtocolIdentifierSchema,
+    reviewId: ProtocolIdentifierSchema,
+    targetItemId: ProtocolIdentifierSchema.nullable().optional(),
+    decisionSource: z.string().max(64).optional(),
+    review: z
+      .object({
+        status: z.string().max(64),
+        riskLevel: z.string().max(64).nullable().optional(),
+        userAuthorization: z.string().max(64).nullable().optional(),
+        rationale: ProtocolShortTextSchema.nullable().optional(),
+      })
+      .passthrough(),
+    action: z.object({ type: z.string().max(64) }).passthrough(),
+  })
+  .passthrough();
+export type AutoApprovalReviewCompleted = z.output<
+  typeof AutoApprovalReviewCompletedNotificationSchema
+>;
+
 export const serverNotificationSchemas = {
   "turn/started": TurnNotificationSchema,
+  "item/autoApprovalReview/completed": AutoApprovalReviewCompletedNotificationSchema,
   "turn/completed": TurnNotificationSchema,
   "item/started": ItemStartedNotificationSchema,
   "item/completed": ItemCompletedNotificationSchema,

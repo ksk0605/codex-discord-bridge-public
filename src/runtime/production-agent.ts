@@ -62,6 +62,7 @@ import {
 } from "./agent-runtime.js";
 import { ApprovalRouter } from "./approval-router.js";
 import { DeliveryLedger } from "./delivery-ledger.js";
+import { GuardianOverrideRouter } from "./guardian-override.js";
 import { createRuntimeLog } from "./lifecycle-log.js";
 
 const APPROVAL_METHODS: readonly ApprovalRequestMethod[] = [
@@ -71,6 +72,46 @@ const APPROVAL_METHODS: readonly ApprovalRequestMethod[] = [
   "execCommandApproval",
   "applyPatchApproval",
 ];
+
+interface GuardianOverrideConfig {
+  readonly ttlMinutes?: number;
+  readonly autoRetry?: boolean;
+  readonly fallbackChannelId?: string;
+}
+
+// Opt-in per bot: <instance>/guardian-override.json {"enabled": true, ...}. Absent or invalid
+// means the bot keeps the plain Auto Review behaviour.
+async function loadGuardianOverrideConfig(
+  path: string,
+  reportError: (error: unknown) => void,
+): Promise<GuardianOverrideConfig | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (typeof value !== "object" || value === null) return undefined;
+    const config = value as Record<string, unknown>;
+    if (config.enabled !== true) return undefined;
+    const ttl = config.ttlMinutes;
+    const channel = config.fallbackChannelId;
+    return {
+      ...(typeof ttl === "number" && Number.isInteger(ttl) && ttl >= 1 && ttl <= 240
+        ? { ttlMinutes: ttl }
+        : {}),
+      ...(typeof config.autoRetry === "boolean" ? { autoRetry: config.autoRetry } : {}),
+      ...(typeof channel === "string" && /^\d{5,32}$/.test(channel)
+        ? { fallbackChannelId: channel }
+        : {}),
+    };
+  } catch (error) {
+    reportError(error);
+    return undefined;
+  }
+}
 
 function ownValue<T>(record: Record<string, T>, key: string, label: string): T {
   const value = Object.hasOwn(record, key) ? record[key] : undefined;
@@ -330,17 +371,28 @@ class RuntimeAppServer {
   private readonly workspaceNormalizer: WorkspaceNormalizer;
   private readonly journal: AtomicThreadCreationJournal;
   private readonly approval: ApprovalRouter;
+  private readonly guardian: Pick<GuardianOverrideRouter, "handleReview"> | undefined;
   private approvalUnsubscribe: Array<() => void> = [];
   private runtimeSession: AgentRuntimeSession | undefined;
+  private client: AppServerClient | undefined;
 
   constructor(
     workspaceNormalizer: WorkspaceNormalizer,
     journal: AtomicThreadCreationJournal,
     approval: ApprovalRouter,
+    guardian?: Pick<GuardianOverrideRouter, "handleReview">,
   ) {
     this.workspaceNormalizer = workspaceNormalizer;
     this.journal = journal;
     this.approval = approval;
+    this.guardian = guardian;
+  }
+
+  // Official owner override of one Auto Review denial, on the live App Server.
+  async approveGuardianDenied(threadId: string, event: Record<string, unknown>): Promise<void> {
+    const client = this.client;
+    if (client === undefined) throw new BridgeError("CONFLICT", "Codex App Server is not running.");
+    await client.request("thread/approveGuardianDeniedAction", { threadId, event });
   }
 
   async start(): Promise<AgentRuntimeSession> {
@@ -348,6 +400,15 @@ class RuntimeAppServer {
     try {
       await client.initialize("0.1.0");
       this.bindApprovals(client);
+      this.client = client;
+      const guardian = this.guardian;
+      if (guardian !== undefined) {
+        this.approvalUnsubscribe.push(
+          client.onNotification("item/autoApprovalReview/completed", (review) =>
+            guardian.handleReview(review),
+          ),
+        );
+      }
       const session = new CodexSessionService({
         client,
         workspaceNormalizer: this.workspaceNormalizer,
@@ -365,6 +426,7 @@ class RuntimeAppServer {
   async stop(): Promise<void> {
     this.runtimeSession?.dispose?.();
     this.runtimeSession = undefined;
+    this.client = undefined;
     for (const unsubscribe of this.approvalUnsubscribe.splice(0)) unsubscribe();
     await this.process.stop();
   }
@@ -389,6 +451,7 @@ export interface RuntimeAppServerOptions {
   readonly workspaceNormalizer: WorkspaceNormalizer;
   readonly journal: AtomicThreadCreationJournal;
   readonly approval: ApprovalRouter;
+  readonly guardian?: Pick<GuardianOverrideRouter, "handleReview">;
 }
 
 export interface ProductionAgentComponentOptions {
@@ -504,14 +567,59 @@ export async function createProductionAgentComponent(
     ownerId: context.bot.ownerUserId,
     discord: { sendApproval: (notice) => adapter.sendApproval(notice) },
   });
+  const guardianConfig = await loadGuardianOverrideConfig(
+    join(context.paths.instanceDirectory(context.binding.id), "guardian-override.json"),
+    reportError,
+  );
+  let runtimeAppServer: RuntimeAppServer | undefined;
+  let runtimeRef: AgentRuntime | undefined;
+  const guardian =
+    guardianConfig === undefined
+      ? undefined
+      : new GuardianOverrideRouter({
+          ownerId: context.bot.ownerUserId,
+          botName: context.bot.name,
+          logPath: join(
+            context.paths.instanceDirectory(context.binding.id),
+            "guardian-overrides.jsonl",
+          ),
+          ...(guardianConfig.ttlMinutes === undefined
+            ? {}
+            : { ttlMs: guardianConfig.ttlMinutes * 60_000 }),
+          ...(guardianConfig.autoRetry === undefined
+            ? {}
+            : { autoRetry: guardianConfig.autoRetry }),
+          ...(guardianConfig.fallbackChannelId === undefined
+            ? {}
+            : { fallbackChannelId: guardianConfig.fallbackChannelId }),
+          onError: reportError,
+          ports: {
+            sendNotice: (notice) => adapter.sendGuardianOverride(notice),
+            notifyOwner: (text) => adapter.sendOwnerNotice(context.bot.ownerUserId, text),
+            approve: async (threadId, event) => {
+              if (runtimeAppServer === undefined)
+                throw new BridgeError("CONFLICT", "Owner override needs the built-in App Server.");
+              await runtimeAppServer.approveGuardianDenied(threadId, event);
+            },
+            currentThreadId: () => runtimeRef?.currentThreadId,
+            channelForTurn: (turnId) => runtimeRef?.channelForTurn(turnId),
+            retry: async (channelId, text) => {
+              const document = await registry.read();
+              const bot = ownValue(document.bots, context.bot.name, "Bot");
+              await adapter.injectTurn({ channelId, authorId: bot.botUserId, text });
+            },
+          },
+        });
   const runtimeAppServerOptions: RuntimeAppServerOptions = {
     workspaceNormalizer,
     journal,
     approval,
+    ...(guardian === undefined ? {} : { guardian }),
   };
-  const appServer =
-    options.createAppServer?.(runtimeAppServerOptions) ??
-    new RuntimeAppServer(workspaceNormalizer, journal, approval);
+  const customAppServer = options.createAppServer?.(runtimeAppServerOptions);
+  if (customAppServer === undefined)
+    runtimeAppServer = new RuntimeAppServer(workspaceNormalizer, journal, approval, guardian);
+  const appServer = customAppServer ?? (runtimeAppServer as RuntimeAppServer);
   const deliveryLedger = new DeliveryLedger(
     join(context.paths.instanceDirectory(context.binding.id), "delivery-ledger.json"),
   );
@@ -541,6 +649,7 @@ export async function createProductionAgentComponent(
     },
     progress,
   });
+  runtimeRef = runtime;
   const fallbackManager = createFallbackAgentManager({
     sharedManager,
     runtime,
@@ -565,7 +674,13 @@ export async function createProductionAgentComponent(
     registry,
     runtime,
     manager,
-    approval,
+    approval:
+      guardian === undefined
+        ? approval
+        : {
+            handleInteraction: (interaction) =>
+              guardian.handleInteraction(interaction) || approval.handleInteraction(interaction),
+          },
     observation: progress,
     attachmentStore,
     onError: reportError,
@@ -607,6 +722,7 @@ export async function createProductionAgentComponent(
       // shuts down, so inject never makes stop slower.
       const injectClosing = injectServer?.close().catch(reportError);
       approval.cancelAll();
+      guardian?.cancelAll();
       adapter.quiesce();
       let primary: unknown;
       try {

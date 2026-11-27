@@ -33,6 +33,7 @@ import type {
   ApprovalNotice,
   ApprovalRouter,
 } from "../runtime/approval-router.js";
+import type { GuardianOverrideNotice } from "../runtime/guardian-override.js";
 import type { ModelSettingsStatus, ModelSummary } from "../runtime/model-settings.js";
 import {
   createDiscordDeliveryReceipt,
@@ -542,6 +543,20 @@ function approvalText(notice: ApprovalNotice): string {
     `Item: ${notice.itemId}`,
     ...(notice.command === undefined ? [] : [`Command: ${notice.command}`]),
     ...(notice.cwd === undefined ? [] : [`Working directory: ${notice.cwd}`]),
+  ].join("\n");
+  return redactDiscordSecrets(details, { maxOutputLength: MAX_COMMAND_RESPONSE });
+}
+
+function guardianOverrideText(notice: GuardianOverrideNotice): string {
+  const fence = (value: string) => `\`\`\`\n${value.replaceAll("```", "ʼʼʼ")}\n\`\`\``;
+  const details = [
+    `🛑 **${notice.botName}** — Codex 자동 심사가 이 동작을 거절했어요.`,
+    fence(notice.summary),
+    ...(notice.cwd === undefined ? [] : [`폴더: ${notice.cwd}`]),
+    `위험도: ${notice.riskLevel ?? "알 수 없음"} · 심사가 본 승인 수준: ${notice.userAuthorization ?? "알 수 없음"}`,
+    ...(notice.rationale === undefined ? [] : [`거절 이유: ${notice.rationale}`]),
+    "",
+    `[이 동작 승인]을 누르면 Codex 공식 승인 기록(/approve와 같음)을 남기고 봇이 같은 동작을 한 번 다시 시도해요. 재시도도 심사를 다시 거쳐요. 버튼은 1회용이고 ${notice.expiresInMinutes}분 뒤 만료돼요.`,
   ].join("\n");
   return redactDiscordSecrets(details, { maxOutputLength: MAX_COMMAND_RESPONSE });
 }
@@ -1148,6 +1163,26 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
     });
     this.pendingApprovals.set(baseId, { requestId: notice.requestId, messageId: sent.id });
     return sent.id;
+  }
+
+  async sendGuardianOverride(notice: GuardianOverrideNotice): Promise<string> {
+    if (this.pendingApprovals.size >= MAX_PENDING_APPROVAL_BUTTONS) {
+      throw new BridgeError("CONFLICT", "Too many pending Discord approval buttons.");
+    }
+    const baseId = `${APPROVAL_BUTTON_PREFIX}${randomUUID()}`;
+    const sent = await this.options.transport.sendDirectMessage(notice.ownerId, {
+      content: guardianOverrideText(notice),
+      buttons: [
+        { customId: `${baseId}:allow`, label: "이 동작 승인", style: "success" },
+        { customId: `${baseId}:deny`, label: "무시", style: "danger" },
+      ],
+    });
+    this.pendingApprovals.set(baseId, { requestId: notice.requestId, messageId: sent.id });
+    return sent.id;
+  }
+
+  async sendOwnerNotice(ownerId: string, content: string): Promise<void> {
+    await this.options.transport.sendDirectMessage(ownerId, { content });
   }
 
   private async snapshot() {

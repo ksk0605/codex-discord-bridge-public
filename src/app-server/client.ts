@@ -46,6 +46,7 @@ const BEST_EFFORT_PROGRESS_NOTIFICATION_METHODS = [
   "item/reasoning/summaryPartAdded",
   "item/commandExecution/outputDelta",
   "warning",
+  "item/autoApprovalReview/completed",
 ] as const satisfies readonly ServerNotificationMethod[];
 type BestEffortProgressNotificationMethod =
   (typeof BEST_EFFORT_PROGRESS_NOTIFICATION_METHODS)[number];

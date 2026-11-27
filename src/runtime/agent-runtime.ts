@@ -338,6 +338,16 @@ export class AgentRuntime {
     return this.state === "running" && !this.deliveryPaused && this.pendingControls === 0;
   }
 
+  // The Codex thread the next non-fresh turn will run in.
+  get currentThreadId(): string | undefined {
+    return this.binding?.threadId;
+  }
+
+  // Discord channel of the running turn, if it is the one asked about.
+  channelForTurn(turnId: string): string | undefined {
+    return this.active?.turnId === turnId ? this.active.item.channelId : undefined;
+  }
+
   enqueue(input: TurnInput): Promise<void> {
     if (!this.acceptingTurns) {
       throw new BridgeError("CONFLICT", "Agent runtime is not accepting turns.");
