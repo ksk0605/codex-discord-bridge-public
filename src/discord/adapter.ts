@@ -573,6 +573,7 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
   private readonly timers: DiscordAdapterTimers;
   private readonly typingIntervalMs: number;
   private readonly pendingApprovals = new Map<string, PendingApprovalButton>();
+  private readonly approvalLinks = new Map<string, string>();
   private readonly activeMessageHandlers = new Set<Promise<void>>();
   private unsubscribe: Array<() => void> = [];
   private commitTail = Promise.resolve();
@@ -1199,6 +1200,11 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
     return sent.id;
   }
 
+  // Jump link to an approval post in the shared approval channel, when one was posted there.
+  approvalLink(messageId: string): string | undefined {
+    return this.approvalLinks.get(messageId);
+  }
+
   async sendOwnerNotice(ownerId: string, content: string): Promise<void> {
     await this.postToOwner(ownerId, { content: `${this.options.botName}: ${content}` });
   }
@@ -1210,11 +1216,22 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
     const channelId = this.options.approvalChannelId;
     if (channelId === undefined) return this.options.transport.sendDirectMessage(ownerId, payload);
     try {
-      return await this.options.transport.sendMessage(channelId, {
+      const sent = await this.options.transport.sendMessage(channelId, {
         ...payload,
         content: `<@${ownerId}> ${payload.content}`,
         mentionUserIds: [ownerId],
       });
+      if (sent.guildId !== undefined && payload.buttons !== undefined) {
+        if (this.approvalLinks.size >= 256) {
+          const oldest = this.approvalLinks.keys().next().value;
+          if (oldest !== undefined) this.approvalLinks.delete(oldest);
+        }
+        this.approvalLinks.set(
+          sent.id,
+          `https://discord.com/channels/${sent.guildId}/${channelId}/${sent.id}`,
+        );
+      }
+      return sent;
     } catch (error) {
       // Never lose an approval because the bot cannot post in the shared channel.
       this.reportError(error);

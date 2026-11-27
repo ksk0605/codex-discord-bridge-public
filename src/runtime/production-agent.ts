@@ -600,6 +600,7 @@ export async function createProductionAgentComponent(
           onError: reportError,
           ports: {
             sendNotice: (notice) => adapter.sendGuardianOverride(notice),
+            noticeLink: (messageId) => adapter.approvalLink(messageId),
             notifyOwner: (text) => adapter.sendOwnerNotice(context.bot.ownerUserId, text),
             approve: async (threadId, event) => {
               if (runtimeAppServer === undefined)

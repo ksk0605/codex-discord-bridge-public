@@ -1315,6 +1315,11 @@ describe("DiscordGatewayAdapter", () => {
   it("posts approval buttons to the shared approval channel and accepts only the owner there", async () => {
     const APPROVALS = "200000000000000099";
     const context = fixture(document(), undefined, undefined, { approvalChannelId: APPROVALS });
+    const plainSend = context.transport.sendMessage.bind(context.transport);
+    context.transport.sendMessage = async (channelId, payload) => ({
+      ...(await plainSend(channelId, payload)),
+      guildId: "300000000000000001",
+    });
     const noticeMessage = await context.adapter.sendGuardianOverride({
       ownerId: OWNER,
       requestId: "guardian:review-1",
@@ -1333,6 +1338,9 @@ describe("DiscordGatewayAdapter", () => {
     expect(posted.channelId).toBe(APPROVALS);
     expect(posted.content.startsWith(`<@${OWNER}> `)).toBe(true);
     expect(posted.mentionUserIds).toEqual([OWNER]);
+    expect(context.adapter.approvalLink(noticeMessage)).toBe(
+      `https://discord.com/channels/300000000000000001/${APPROVALS}/${noticeMessage}`,
+    );
     const customId = posted.buttons?.[0]?.customId.replace(/:allow$/u, "");
     const respond = vi.fn(async () => undefined);
 

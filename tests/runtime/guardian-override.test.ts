@@ -130,6 +130,32 @@ describe("GuardianOverrideRouter", () => {
     expect(guard.pendingCount()).toBe(1);
   });
 
+  it("logs a jump link to the posted notice when the port provides one", async () => {
+    const { mkdtemp, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = await mkdtemp(join(tmpdir(), "guardian-link-"));
+    const logPath = join(dir, "log.jsonl");
+    const fake = fakePorts({ noticeLink: (id) => `https://discord.com/channels/1/2/${id}` });
+    const guard = new GuardianOverrideRouter({
+      ownerId: "owner-1",
+      botName: "srsr-ops",
+      ports: fake.ports,
+      logPath,
+      now: () => 1_000,
+    });
+    guard.handleReview(review());
+    await vi.waitFor(async () =>
+      expect(await readFile(logPath, "utf8").catch(() => "")).toContain("offered"),
+    );
+    const entry = JSON.parse((await readFile(logPath, "utf8")).trim());
+    expect(entry).toMatchObject({
+      result: "offered",
+      bot: "srsr-ops",
+      link: "https://discord.com/channels/1/2/message-1",
+    });
+  });
+
   it("ignores approved reviews, repeats of the same review, and critical denials", async () => {
     const fake = fakePorts();
     const guard = router(fake.ports);

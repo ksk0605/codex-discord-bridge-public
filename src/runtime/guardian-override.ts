@@ -38,6 +38,8 @@ export interface GuardianOverrideInteraction {
 
 export interface GuardianOverridePorts {
   sendNotice(notice: GuardianOverrideNotice): Promise<string>;
+  // Jump link to the posted notice, so the chief can hand the owner a direct link.
+  noticeLink?(messageId: string): string | undefined;
   notifyOwner(text: string): Promise<void>;
   approve(threadId: string, event: Record<string, unknown>): Promise<void>;
   // The bot's current Codex thread, to check a retry would land in the approved thread.
@@ -194,7 +196,14 @@ export class GuardianOverrideRouter {
       .then((messageId) => {
         const current = this.pending.get(key);
         if (current !== undefined) current.messageId = messageId;
-        void this.log({ result: "offered", reviewId: record.reviewId, summary });
+        const link = this.options.ports.noticeLink?.(messageId);
+        void this.log({
+          result: "offered",
+          reviewId: record.reviewId,
+          summary,
+          ...(link === undefined ? {} : { link }),
+          expiresAt: new Date(record.expiresAt).toISOString(),
+        });
       })
       .catch((error) => {
         this.drop(key);
