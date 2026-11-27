@@ -77,6 +77,7 @@ interface GuardianOverrideConfig {
   readonly ttlMinutes?: number;
   readonly autoRetry?: boolean;
   readonly fallbackChannelId?: string;
+  readonly approvalChannelId?: string;
 }
 
 // Opt-in per bot: <instance>/guardian-override.json {"enabled": true, ...}. Absent or invalid
@@ -98,7 +99,11 @@ async function loadGuardianOverrideConfig(
     if (config.enabled !== true) return undefined;
     const ttl = config.ttlMinutes;
     const channel = config.fallbackChannelId;
+    const approvalChannel = config.approvalChannelId;
     return {
+      ...(typeof approvalChannel === "string" && /^\d{5,32}$/.test(approvalChannel)
+        ? { approvalChannelId: approvalChannel }
+        : {}),
       ...(typeof ttl === "number" && Number.isInteger(ttl) && ttl >= 1 && ttl <= 240
         ? { ttlMinutes: ttl }
         : {}),
@@ -687,6 +692,9 @@ export async function createProductionAgentComponent(
     onIngress: createIngressLog(
       join(context.paths.instanceDirectory(context.binding.id), "ingress.jsonl"),
     ),
+    ...(guardianConfig?.approvalChannelId === undefined
+      ? {}
+      : { approvalChannelId: guardianConfig.approvalChannelId }),
   });
 
   const injectConfig = await loadInjectConfig(

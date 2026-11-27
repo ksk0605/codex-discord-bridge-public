@@ -108,6 +108,8 @@ export interface DiscordMessagePayload {
   readonly content: string;
   readonly replyToMessageId?: string;
   readonly buttons?: readonly DiscordButtonPayload[];
+  // Users this message may ping (all other mentions stay suppressed).
+  readonly mentionUserIds?: readonly string[];
 }
 
 export interface DiscordFilePayload {
@@ -280,6 +282,9 @@ export interface DiscordGatewayAdapterOptions {
   readonly persistInjected?: (input: TurnInput) => Promise<void>;
   readonly onIngress?: (event: DiscordIngressDiagnostic) => void;
   readonly onError?: (error: unknown) => void;
+  // Post approval buttons and owner notices to this guild channel (mentioning the owner)
+  // instead of the owner's DMs. Only the owner's clicks there count.
+  readonly approvalChannelId?: string;
 }
 
 export interface DiscordIngressDiagnostic {
@@ -1011,15 +1016,28 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
   async handleButton(event: DiscordButtonEvent): Promise<void> {
     try {
       const { bot, policy } = await this.snapshot();
-      const decision = evaluateDiscordAccess({
-        bot,
-        policy,
-        event: accessEvent("approval", event, event.userId, event.customId),
-        now: this.now(),
-      });
-      if (decision.action !== "deliver") {
-        await event.respond("이 승인 요청을 처리할 권한이 없습니다.");
-        return;
+      const approvalChannelId = this.options.approvalChannelId;
+      if (approvalChannelId !== undefined && event.channelId === approvalChannelId) {
+        // Shared approval channel: Discord authenticates the clicker, so the owner's click
+        // there is as strong as a DM. It also confirms ownership like a first owner DM.
+        if (event.userId !== bot.ownerUserId || event.userId === bot.botUserId) {
+          await event.respond("이 승인 요청을 처리할 권한이 없습니다.");
+          return;
+        }
+        if (bot.ownerConfirmedAt === undefined) {
+          await this.options.registry.confirmOwner(this.options.botName, event.userId);
+        }
+      } else {
+        const decision = evaluateDiscordAccess({
+          bot,
+          policy,
+          event: accessEvent("approval", event, event.userId, event.customId),
+          now: this.now(),
+        });
+        if (decision.action !== "deliver") {
+          await event.respond("이 승인 요청을 처리할 권한이 없습니다.");
+          return;
+        }
       }
 
       const parsed = this.parseApprovalButton(event.customId);
@@ -1154,8 +1172,8 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
       throw new BridgeError("CONFLICT", "Too many pending Discord approval buttons.");
     }
     const baseId = `${APPROVAL_BUTTON_PREFIX}${randomUUID()}`;
-    const sent = await this.options.transport.sendDirectMessage(notice.ownerId, {
-      content: approvalText(notice),
+    const sent = await this.postToOwner(notice.ownerId, {
+      content: `**${this.options.botName}** — ${approvalText(notice)}`,
       buttons: [
         { customId: `${baseId}:allow`, label: "Allow", style: "success" },
         { customId: `${baseId}:deny`, label: "Deny", style: "danger" },
@@ -1170,7 +1188,7 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
       throw new BridgeError("CONFLICT", "Too many pending Discord approval buttons.");
     }
     const baseId = `${APPROVAL_BUTTON_PREFIX}${randomUUID()}`;
-    const sent = await this.options.transport.sendDirectMessage(notice.ownerId, {
+    const sent = await this.postToOwner(notice.ownerId, {
       content: guardianOverrideText(notice),
       buttons: [
         { customId: `${baseId}:allow`, label: "이 동작 승인", style: "success" },
@@ -1182,7 +1200,26 @@ export class DiscordGatewayAdapter implements AgentRuntimeOutput {
   }
 
   async sendOwnerNotice(ownerId: string, content: string): Promise<void> {
-    await this.options.transport.sendDirectMessage(ownerId, { content });
+    await this.postToOwner(ownerId, { content: `${this.options.botName}: ${content}` });
+  }
+
+  private async postToOwner(
+    ownerId: string,
+    payload: DiscordMessagePayload,
+  ): Promise<{ id: string }> {
+    const channelId = this.options.approvalChannelId;
+    if (channelId === undefined) return this.options.transport.sendDirectMessage(ownerId, payload);
+    try {
+      return await this.options.transport.sendMessage(channelId, {
+        ...payload,
+        content: `<@${ownerId}> ${payload.content}`,
+        mentionUserIds: [ownerId],
+      });
+    } catch (error) {
+      // Never lose an approval because the bot cannot post in the shared channel.
+      this.reportError(error);
+      return this.options.transport.sendDirectMessage(ownerId, payload);
+    }
   }
 
   private async snapshot() {
@@ -1583,7 +1620,10 @@ export class DiscordJsGatewayTransport implements DiscordGatewayTransport {
       const sent = await channel.send({
         content: payload.content,
         components: componentsFor(payload.buttons),
-        allowedMentions: progressAllowedMentions(),
+        allowedMentions: {
+          ...progressAllowedMentions(),
+          users: [...(payload.mentionUserIds ?? [])],
+        },
         ...(payload.replyToMessageId === undefined
           ? {}
           : { reply: { messageReference: payload.replyToMessageId, failIfNotExists: false } }),

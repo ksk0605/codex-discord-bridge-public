@@ -309,6 +309,7 @@ function fixture(
   initial = document(),
   attachmentStoreOverride?: Partial<DiscordAttachmentStorePort>,
   observationOverride?: Partial<DiscordObservationIngress>,
+  adapterOptions: { approvalChannelId?: string } = {},
 ) {
   let current = initial;
   const transport = new FakeTransport();
@@ -376,6 +377,7 @@ function fixture(
     attachmentStore,
     observation,
     createPairingCode: () => "PAIR-ONE",
+    ...adapterOptions,
     now: () => Date.parse("2026-07-28T01:00:00.000Z"),
     timers: {
       setInterval: (callback) => {
@@ -1308,6 +1310,60 @@ describe("DiscordGatewayAdapter", () => {
       action: "allow",
     });
     expect(respond).toHaveBeenCalled();
+  });
+
+  it("posts approval buttons to the shared approval channel and accepts only the owner there", async () => {
+    const APPROVALS = "200000000000000099";
+    const context = fixture(document(), undefined, undefined, { approvalChannelId: APPROVALS });
+    const noticeMessage = await context.adapter.sendGuardianOverride({
+      ownerId: OWNER,
+      requestId: "guardian:review-1",
+      botName: "bot-one",
+      actionType: "command",
+      summary: "gh pr merge 92 --match-head-commit abc",
+      expiresInMinutes: 30,
+    });
+    expect(context.transport.direct).toHaveLength(0);
+    const posted = context.transport.sent.at(-1) as {
+      channelId: string;
+      content: string;
+      mentionUserIds?: string[];
+      buttons?: { customId: string }[];
+    };
+    expect(posted.channelId).toBe(APPROVALS);
+    expect(posted.content.startsWith(`<@${OWNER}> `)).toBe(true);
+    expect(posted.mentionUserIds).toEqual([OWNER]);
+    const customId = posted.buttons?.[0]?.customId.replace(/:allow$/u, "");
+    const respond = vi.fn(async () => undefined);
+
+    await context.adapter.handleButton({
+      customId: `${customId}:allow`,
+      messageId: noticeMessage,
+      channelId: APPROVALS,
+      location: "guild",
+      guildId: "300000000000000001",
+      userId: "100000000000000077",
+      respond,
+    });
+    expect(context.approval.handleInteraction).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenLastCalledWith("이 승인 요청을 처리할 권한이 없습니다.");
+
+    await context.adapter.handleButton({
+      customId: `${customId}:allow`,
+      messageId: noticeMessage,
+      channelId: APPROVALS,
+      location: "guild",
+      guildId: "300000000000000001",
+      userId: OWNER,
+      respond,
+    });
+    expect(context.approval.handleInteraction).toHaveBeenCalledWith({
+      requestId: "guardian:review-1",
+      messageId: noticeMessage,
+      userId: OWNER,
+      action: "allow",
+    });
+    expect(respond).toHaveBeenLastCalledWith("승인했습니다.");
   });
 });
 
